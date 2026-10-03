@@ -11,6 +11,7 @@ import io
 import re
 import statistics as st
 import sys
+import textwrap
 from pathlib import Path
 
 import matplotlib
@@ -301,6 +302,30 @@ def chart_latency(theme, D):
     return fig
 
 
+# ---- code snippets ------------------------------------------------------------------------
+def snippet(rel, start, end, caption, lang='cuda', before=0):
+    """A highlighted excerpt of a repository file: from the first line matching `start`
+    (moved up by `before` lines to take a leading comment) to the next line matching
+    `end`. Anchors are text, not line numbers, so the excerpt follows the code; a missing
+    anchor stops the build instead of quoting stale code."""
+    from pygments import highlight
+    from pygments.formatters import HtmlFormatter
+    from pygments.lexers import CMakeLexer, CudaLexer, JavaLexer, TextLexer
+    lines = (ROOT / rel).read_text(encoding='utf-8').splitlines()
+    i = next((k for k, l in enumerate(lines) if re.search(start, l)), None)
+    if i is None:
+        raise SystemExit('snippet anchor not found in %s: %s' % (rel, start))
+    i = max(0, i - before)
+    j = next((k for k in range(i, len(lines)) if re.search(end, lines[k])), None)
+    if j is None:
+        raise SystemExit('snippet end not found in %s: %s' % (rel, end))
+    code = textwrap.dedent('\n'.join(lines[i:j + 1]))
+    lexer = {'cuda': CudaLexer, 'java': JavaLexer, 'cmake': CMakeLexer, 'text': TextLexer}[lang]()
+    body = highlight(code, lexer, HtmlFormatter(linenos='inline', linenostart=i + 1))
+    return ('<figure class="code"><div class="code-head"><span class="path">%s</span><span class="lines">lines %d\u2013%d</span></div>%s'
+            '<figcaption>%s</figcaption></figure>' % (html.escape(rel), i + 1, j + 1, body, caption))
+
+
 # ---- html -------------------------------------------------------------------------------
 FONTS = ('<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
          '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100..125,500..800'
@@ -315,15 +340,18 @@ CSS = '''
   --c-van:#a3aba5; --c-van2:#68736c; --c-cpu:#6c9bd2; --c-cpu2:#2f69a8; --c-gpu:#74ad3d; --c-gpu2:#3d7a22;
   --font-display:"Archivo","Arial Narrow",system-ui,sans-serif; --font-body:"Source Sans 3","Segoe UI",system-ui,-apple-system,sans-serif;
   --font-mono:"JetBrains Mono",ui-monospace,Consolas,monospace; --font-chart:"Source Sans 3","Segoe UI",system-ui,sans-serif;
+  --code-bg:#fbfcfa; --code-kw:#7b3fa0; --code-type:#1f6a86; --code-fn:#8a5800; --code-str:#a63b1e; --code-com:#6c776f; --code-num:#2e7334; --code-pre:#9b3f7a;
 }
 @media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
   --bg:#101512; --surface:#161d18; --raised:#1d2620; --ink:#e3e9e3; --muted:#9aa89f; --line:#2a352e;
   --accent:#8fcf68; --accent-ink:#0f1a10; --accent-soft:#1c2c1d; --axis:#8a978e; --grid:#252f28;
-  --c-van:#6f7a73; --c-van2:#adb7b0; --c-cpu:#3f6fa6; --c-cpu2:#86b5ea; --c-gpu:#4f8a2c; --c-gpu2:#97d56c; color-scheme:dark}}
+  --c-van:#6f7a73; --c-van2:#adb7b0; --c-cpu:#3f6fa6; --c-cpu2:#86b5ea; --c-gpu:#4f8a2c; --c-gpu2:#97d56c;
+  --code-bg:#121914; --code-kw:#c9a0ee; --code-type:#6fc2d9; --code-fn:#e3b860; --code-str:#f0937a; --code-com:#7f8d84; --code-num:#97d56c; --code-pre:#e3a3d6; color-scheme:dark}}
 :root[data-theme="dark"]{
   --bg:#101512; --surface:#161d18; --raised:#1d2620; --ink:#e3e9e3; --muted:#9aa89f; --line:#2a352e;
   --accent:#8fcf68; --accent-ink:#0f1a10; --accent-soft:#1c2c1d; --axis:#8a978e; --grid:#252f28;
-  --c-van:#6f7a73; --c-van2:#adb7b0; --c-cpu:#3f6fa6; --c-cpu2:#86b5ea; --c-gpu:#4f8a2c; --c-gpu2:#97d56c; color-scheme:dark}
+  --c-van:#6f7a73; --c-van2:#adb7b0; --c-cpu:#3f6fa6; --c-cpu2:#86b5ea; --c-gpu:#4f8a2c; --c-gpu2:#97d56c;
+  --code-bg:#121914; --code-kw:#c9a0ee; --code-type:#6fc2d9; --code-fn:#e3b860; --code-str:#f0937a; --code-com:#7f8d84; --code-num:#97d56c; --code-pre:#e3a3d6; color-scheme:dark}
 *{box-sizing:border-box}
 html{scroll-behavior:smooth;scroll-padding-top:64px}
 @media (prefers-reduced-motion: reduce){html{scroll-behavior:auto}}
@@ -369,6 +397,20 @@ ul{padding-left:22px}
 li{margin:4px 0}
 .notes h3{font-size:19px;margin-top:32px}
 footer{margin-top:34px;color:var(--muted);font-size:14px}
+figure.code{padding:0;overflow:hidden;background:var(--code-bg)}
+.code-head{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:7px 14px;border-bottom:1px solid var(--line);background:var(--raised);
+  font:600 12px/1.4 var(--font-mono);color:var(--muted)}
+.code-head .path{color:var(--ink)}
+figure.code .highlight{overflow-x:auto}
+figure.code pre{margin:0;border:0;border-radius:0;background:none;padding:12px 14px;font:400 12.5px/1.55 var(--font-mono);color:var(--ink);font-variant-ligatures:none}
+code,pre{font-variant-ligatures:none}
+figure.code figcaption{margin:0;padding:9px 14px 11px;border-top:1px solid var(--line);background:var(--surface)}
+.linenos{display:inline-block;min-width:3.2em;padding-right:1em;color:var(--muted);opacity:.7;user-select:none;text-align:right}
+.k,.kd,.kn,.kr,.kp,.ow{color:var(--code-kw)} .kt,.nc,.nn{color:var(--code-type)} .nf,.fm{color:var(--code-fn)}
+.s,.s1,.s2,.sc,.sa,.dl,.se{color:var(--code-str)} .c,.c1,.cm,.cs,.ch{color:var(--code-com);font-style:italic}
+.cp,.cpf{color:var(--code-pre)} .m,.mi,.mf,.mh,.mo,.il,.kc{color:var(--code-num)} .err{color:inherit;background:none}
+.lead{margin-bottom:0}
+h4{font:700 16px/1.35 var(--font-display);font-stretch:104%;margin:30px 0 4px}
 '''
 
 
@@ -559,6 +601,11 @@ def main():
              '<b>%.0f×</b> faster than our own C++ port on 32 threads. That C++ port is the debugging reference (an interpreter of the density graph, '
              'written for clarity and verified first), not a tuned CPU implementation: on one thread it runs at %.2f× vanilla\'s JIT-compiled speed. '
              'CV is the coefficient of variation over all timed repetitions (warm-up repetitions excluded).</p>' % ('{:,.0f}'.format(sp1), sp32, spc, cpu1x))
+    H.append('<p class="lead">Vanilla is timed through its own code path. The inner loop of the vanilla benchmark makes the calls that '
+             '<code>buildTerrain</code> makes before carvers, on real ProtoChunks whose biomes were generated in phase 1:</p>')
+    H.append(snippet('oracle/src/main/java/mccuda/oracle/TerrainBench.java', r'// phase 2: noise fill', r'buildSurface\.invoke',
+                     'One NoiseChunk per chunk, <code>doFill</code> with aquifers on, then <code>buildSurface</code> with a BiomeManager over the 3\u00d73 '
+                     'neighbourhood. The GPU does exactly this work; nothing is skipped on either side.', lang='java'))
     H.append(figure(charts['scaling'], 'Vanilla reaches %.0f%% of linear scaling at 16 threads (one per core); SMT adds another %.0f%% at 32. The GPU line is the '
                     'end-to-end rate.' % (eff16, smt)))
     H.append(figure(charts['stages'], 'CUDA event times per stage when one batch runs at a time. With two pipeline slots the copy overlaps the next batch\'s kernels.'))
@@ -571,6 +618,9 @@ def main():
     H.append('<p class="note">Bit-exactness is the definition of done: every block state, every biome and every density value is compared for equality with vanilla, '
              'with no tolerance. Device code is compiled with <code>-fmad=false -prec-div=true -prec-sqrt=true -ftz=false</code>, never fast-math; '
              'every optimization below preserves the exact IEEE operations or replaces them by integer work with a written proof that the result is identical.</p>')
+    H.append(snippet('CMakeLists.txt', r'add_compile_options\(\$<\$<COMPILE_LANGUAGE:CUDA>:-fmad=false>', r'--expt-relaxed-constexpr',
+                     'Device flags for every CUDA file: no fused multiply-add, IEEE division and square root, denormals kept. The host side uses '
+                     '<code>/fp:precise</code>, and a unit test checks that the host compiler does not contract.', lang='cmake'))
     H.append('<p>The reference oracle runs the real game classes (Minecraft 26.3 server jar via Fabric Loom, on this machine only) and dumps values for 32 seeds '
              '(8 fixed, 24 random) at 18 chunks each: a 3×3 block at the origin, chunks near and far, chunks at the world border (±1,874,999) and at the '
              '32-bit wrap points of the noise lattice, over the full build height (y = −64 to 319). <code>mccuda_tests --set full</code> (%s): </p>'
@@ -578,6 +628,16 @@ def main():
     H.append(table(['level / check', 'values', 'mismatches', '', 'notes'], test_rows, num_cols=(1, 2)))
     H.append('<p>On top of the oracle set, the benchmark harness dumps three contiguous regions from vanilla and compares them block for block with both generators:</p>')
     H.append(table(['generator', 'region', 'blocks', 'mismatches'], verify_rows, num_cols=(2, 3)))
+    H.append('<p class="lead">Small differences matter. The volume path and the point path of the noise associate the gradient dot product '
+             'differently, so the port keeps both:</p>')
+    H.append(snippet('cpu/include/mccuda/noise_eval.h', r'^// GRADIENT\[hash & 15\]\.dot', r'^    return a \+ c;',
+                     '<code>(gx\u00b7x + gy\u00b7y) + gz\u00b7z</code> for point samples, <code>(gx\u00b7x + gz\u00b7z) + gy\u00b7y</code> for volume samples, '
+                     'where the xz part is reused over y. In float arithmetic these round differently, and the difference is enough to flip blocks.'))
+    H.append('<p class="lead">Neighbour heights in the material rules depend on vanilla\'s column order. The GPU walks all columns in parallel and '
+             'reconstructs what each column would have seen:</p>')
+    H.append(snippet('cuda/src/terrain.cu', r'auto H = \[&\]\(int ox, int oz\)', r'^    \};', 'Columns before (x, z) in the x-major, z-minor loop '
+                     'have finished both surface extensions (h2), later ones neither (h0), and the column itself has finished the eroded-badlands '
+                     'extension (h1). The slope condition reads these heights.', before=2))
     H.append('<p><b>The R-tree tie rule is not a corner case.</b> Over %d seeds (%s quart lookups each, region 128\u00d7128 plus borders), the '
              'last-result candidate changed the chosen parameter leaf at %.0f\u2013%.0f ppm of lookups and the <i>biome</i> at %.0f\u2013%.0f ppm, because '
              'quantized climate values regularly land exactly on a box boundary, which puts the target inside two adjacent boxes at distance 0. Returning the plain nearest leaf would put a wrong biome in roughly one '
@@ -585,6 +645,9 @@ def main():
              'has beyond that is the first lookup of a chunk, which starts from whatever the worker thread looked up last; the oracle and our generators '
              'start it empty.</p>' % (len(ties), '{:,}'.format(int(ties[0]['quarts'])), min(tie_leaf), max(tie_leaf), min(tie_biome), max(tie_biome),
                                      '{:,}'.format(int(round(1e6 / st.mean(tie_biome), -2)))))
+    H.append(snippet('cuda/src/terrain.cu', r'^// tie\[p\]: the previous position', r"^    tie\[idx\] = ",
+                     'A tie flag marks the chain positions where the previous position\'s first minimal leaf also reaches the minimum. Only there can '
+                     'the R-tree\'s last-result candidate change the answer, and only there does the chain kernel take its slow path.'))
     H.append('<p>The engine behaviours that exactness depends on (two evaluation semantics, the R-tree tie rule, aquifer prefill, heightmap order in '
              'the material rules) are written up in the <a href="#notes">engineering notes</a> below.</p>')
 
@@ -593,26 +656,66 @@ def main():
              'the same configuration, and re-verified on the full oracle set before it was committed.</p>')
     H.append(figure(charts['ladder'], 'v9 is measured with two pipeline slots and batch 2048 (same region); its stage bars come from a one-slot run of the same code.'))
     H.append(table(['version', 'change', 'chunks/s', 'step', 'vs v0'], ladder_rows, num_cols=(2, 3, 4)))
-    H.append('''<h3>What mattered</h3><ul>
-<li><b>FP64 is the bottleneck on a GeForce part.</b> The RTX 5090 runs FP64 at 1/64 of the FP32 rate. Minecraft 26.3's gradient noise is FP32 inside, but every
-octave still does about 29 FP64 operations on coordinates (scale, wrap, offset, floor, fraction). A static SASS count of the corner kernel showed ~7,000 FP64-pipe
-instructions against ~16,000 FP32 ones, which at 1:64 means FP64 dominates by an order of magnitude.</li>
-<li><b>v1</b> replaces <code>Mth.floor</code>'s three FP64 compares by one <code>cvt.rmi.s32.f64</code> (which saturates like Java's cast; NaN is tested on the
-bit pattern) and decides <code>GradientNoise.wrap</code>'s range test with integer compares on the IEEE bit pattern.</li>
-<li><b>v2</b>: every corner-level noise is an unshifted volume noise at a fixed scale, so each axis's coordinate setup depends on that axis alone. Its exact result
-is tabulated once per distinct coordinate (y: once per seed for the 49 corner rows; x/z: per corner column) and reused, which removes all FP64 from the
-corner kernel without changing a single operation.</li>
-<li><b>v3/v6</b>: the biome zoom (BiomeManager) looked up for nearly every stone block, because 26.3 checks a cave biome in the material rules, was most of
-the surface kernel ({ZOOM_SHARE}% in an ablation build). Its squared offsets take only 8 × 1,024 distinct values (table), and an FP32 pre-filter with a proven error bound (|f − d| &lt; 1.14e-6
-for distances ≤ 6.31) leaves the FP64 comparison to genuine near-ties only: in {ZOOM_N} random lookups {ZOOM_FB} took that path, with 0 mismatches.</li>
-<li><b>v4/v5</b>: neighbouring chunks need the same positions. A GPU radix-sort dedupe evaluates each distinct position once, for any chunk list: for the
-64×64 region, 2,117,632 surface-level lookups are 144,778 distinct ones (14.6×), and 102,400 corner columns are 66,049 (1.55×).</li>
-<li><b>v7</b>: the generated material-rule tree was <code>noinline</code>, which kept the whole rule context in local memory; inlining it cut the stage by {INLINE}%.</li>
-<li><b>v8</b>: an R-tree DFS seeded with the distance of the neighbouring quart's leaf (+1) provably returns the same first-minimal leaf while pruning most of the
-tree; the last-result tie rule is resolved with parallel tie flags and a warp per biome chunk.</li>
-<li><b>v9</b>: two pipeline slots. The first attempt overlapped nothing: copies run in submission order, so a download enqueued before the next batch's upload
-blocked it. Enqueueing each download after the following upload fixed it (Nsight Systems timeline).</li></ul>'''.replace('{INLINE}', '%.0f' % inline_cut)
-             .replace('{ZOOM_SHARE}', '%.0f' % zoom_share).replace('{ZOOM_N}', zoom_n).replace('{ZOOM_FB}', zoom_fb))
+    zoom_line = next(l.strip() for l in (FINAL / 'tests_full.txt').read_text(encoding='utf-8-sig').splitlines() if 'zoom fast path' in l)
+    H.append('<h3>What mattered, with the code</h3>')
+    H.append('<h4>FP64 is the bottleneck on a GeForce part</h4><p class="lead">The RTX 5090 runs FP64 at 1/64 of its FP32 rate. Minecraft 26.3\'s '
+             'gradient noise is FP32 inside, but each octave sets up its three coordinates in FP64, about 29 FP64 operations per octave. A static SASS '
+             'count of the v0 corner kernel showed about 7,000 FP64 arithmetic, compare and conversion instructions against about 16,000 FP32 ones, '
+             'so at 1:64 the FP64 work dominates by an order of magnitude.</p>')
+    H.append(snippet('cpu/include/mccuda/noise_eval.h', r'^MCC_HD MCC_FI float perlin_volume\(', r'^}', 'Every <code>double</code> line is FP64 '
+                     'work: a multiply, the wrap test, an add, a floor and a subtraction per axis. Everything after <code>volume_corners</code> is FP32.',
+                     before=1))
+    H.append('<h4>v1: floor and wrap as integer work</h4><p class="lead"><code>Mth.floor</code> becomes one conversion instruction with the NaN case '
+             'decided on the bit pattern, and the wrap range test becomes integer compares on the IEEE bits:</p>')
+    H.append(snippet('cpu/include/mccuda/javamath.h', r'^MCC_HD MCC_FI int32_t mth_floor\(double v\)', r'^}', '<code>cvt.rmi.s32.f64</code> floors '
+                     'and saturates exactly like Java\'s <code>(int)</code> cast. The host keeps the reference form.', before=1))
+    H.append(snippet('cpu/include/mccuda/noise_eval.h', r'^MCC_HD MCC_FI double gn_wrap\(double x\)', r'^#endif', 'IEEE magnitudes order like '
+                     'unsigned integers, so <code>-H &lt;= x &lt; H</code> needs no FP64 compare; the sign bit picks the inclusive or exclusive bound.'))
+    H.append('<h4>v2: per-axis coordinate tables</h4><p class="lead">Every corner-level noise is unshifted and at a fixed scale, so each axis\'s '
+             'coordinate setup depends on that axis alone. Its exact result is computed once per distinct coordinate and read back:</p>')
+    H.append(snippet('cpu/include/mccuda/noise_eval.h', r'^struct AxisRec \{', r'^    return \{f, r, mth_smoothstep\(r\)\};',
+                     'The record holds what one axis contributes to a sample. <code>axis_plain</code> is the same arithmetic as the axis setup in '
+                     '<code>perlin_volume</code> above, so the bits are identical.', before=4))
+    H.append(snippet('cpu/include/mccuda/noise_eval.h', r'^MCC_HD MCC_FI float stack_volume_tab\(', r'^}', 'The sample itself is now FP32 only: '
+                     'lattice hashes, gradients and lerps, with the coordinate setup read from three records.', before=1))
+    H.append(snippet('cuda/src/terrain.cu', r'^__global__ void k_corners\(', r'^}', 'Each distinct corner column u owns its x and z records; '
+                     'the y records are shared by every column at the same corner row.'))
+    H.append('<h4>v3 and v6: the biome zoom</h4><p class="lead">The material rules check a cave biome for nearly every stone block, and the '
+             'BiomeManager zoom was %.0f%% of the surface kernel in an ablation build. Its squared offsets take only 8 \u00d7 1,024 distinct values '
+             '(v3), and an FP32 pre-filter with a proven error bound leaves the FP64 comparison to near ties (v6):</p>' % zoom_share)
+    H.append(snippet('cuda/include/mccuda_cuda/terrain_device.h', r'^MCC_HD MCC_FI double zoom_square\(int t\)', r'^}', 'The table is built on '
+                     'the device by this function, with the same expression as the per-lookup code it replaces.', before=3))
+    H.append(snippet('cuda/include/mccuda_cuda/terrain_device.h', r'^// zoom_quart_tab with an exact FP32 pre-filter', r'^    bx = \(min_i & 4\)',
+                     'The comment holds the error bound. One FP32 candidate is the answer; several fall back to vanilla\'s FP64 arithmetic in corner order.'))
+    H.append(snippet('bench/results/final/tests_full.txt', re.escape(zoom_line[:20]), re.escape(zoom_line[:20]), 'The self-test compares the fast path '
+                     'with the plain FP64 zoom on 2^31 random blocks up to the world border. The near ties exercise the FP64 fallback.', lang='text'))
+    H.append('<h4>v4 and v5: deduplication across chunks</h4><p class="lead">Neighbouring chunks need the same positions. For the 64\u00d764 region, '
+             '2,117,632 surface-level lookups are 144,778 distinct ones (14.6\u00d7), and 102,400 corner columns are 66,049 (1.55\u00d7). The dedupe runs on '
+             'the device for any chunk list:</p>')
+    H.append(snippet('cuda/src/dedupe.cuh', r'^    // unique\[0 \.\. \*count\)', r'^    }$', 'Radix sort, mark the first key of each run, scan, scatter. '
+                     'The unique count stays on the device, so the evaluation kernels read it without a host round trip.'))
+    H.append(snippet('cuda/src/terrain.cu', r'^__global__ void k_grid_keys\(', r'^}', 'The key carries the evaluation semantics. A position '
+                     'inside a chunk\'s aquifer prefill window is a volume-path sample, outside it a point-path sample, and the two can differ in '
+                     'the last bit.'))
+    H.append('<h4>v7: inline the generated rule tree</h4><p class="lead">The material-rule functions were <code>noinline</code>, which kept the '
+             'whole rule context in local memory. Inlining them cut the stage by %.0f%%:</p>' % inline_cut)
+    gen_hdr = ROOT / 'build' / 'generated' / 'mccuda_router.cuh'
+    n_rule_fns = len(re.findall(r'^MCC_RULE_FN (?:bool cond|int rule)\d+\(SurfaceCtx& c\) \{', gen_hdr.read_text(encoding='utf-8'), flags=re.M)) \
+        if gen_hdr.exists() else 0
+    H.append(snippet('cuda/src/terrain.cu', r'^#if defined\(__CUDACC__\)$', r'^#endif$', 'The generator emits %s condition and rule functions with '
+                     'this qualifier, one per node of the material-rule tree; the change is this one line.' % ('{:,}'.format(n_rule_fns) if n_rule_fns else 'the')))
+    H.append('<h4>v8: a bounded R-tree search and a warp-parallel tie chain</h4><p class="lead">A search seeded with a neighbouring quart\'s leaf '
+             'distance plus one returns the same first minimal leaf and prunes most of the tree:</p>')
+    H.append(snippet('cuda/src/terrain.cu', r'^// Climate\.RTree\.SubTree\.search \(iterative DFS', r'^    int closest = -1;',
+                     'The proof sits in the comment; the only change from an unbounded search is the initial <code>min_d</code>.'))
+    H.append(snippet('cuda/src/terrain.cu', r'const unsigned any_tie = __ballot_sync', r'prev = prev_lstar = __shfl_sync',
+                     'The common case in the chain kernel: a window of 32 positions with no tie and in sync writes all 32 results at once.'))
+    H.append('<h4>v9: overlap the copy with the next batch</h4><p class="lead">The first pipelined version overlapped nothing: copies run in '
+             'submission order, so a download enqueued before the next batch\'s upload held that upload back. Downloads are now enqueued one batch '
+             'later:</p>')
+    H.append(snippet('cuda/src/terrain.cu', r'^    Slot\* prev = nullptr;', r'^    if \(prev\) I\.download\(\*prev\);$',
+                     'Batch k\'s download is enqueued after batch k+1\'s uploads and kernels, so it overlaps that batch\'s kernels. Found from an '
+                     'Nsight Systems timeline.'))
     H.append('<h3>Ablations</h3><p>Throwaway builds that remove one piece of work, to find what a kernel spends its time on (results not bit-exact by design):</p>')
     H.append(table(['experiment', 'code', 'kernel', 'baseline ms', 'ablated ms', 'share'], abl_rows, num_cols=(3, 4, 5)))
     H.append('''<h3>Tried and reverted</h3><ul>

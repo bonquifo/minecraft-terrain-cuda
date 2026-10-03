@@ -214,49 +214,20 @@ void generated_host_chunk(const IR& ir, const SeedTables& t, int cx, int cz, flo
 }
 
 int debug_compare_generated(const IR& ir, const SeedTables& t, int cx, int cz) {
-    RouterTables T = make_tables(t, t.octaves.data(), t.layers.data());
+    // Generated evaluators on the host vs the CPU interpreter, block by block.
+    const size_t per = static_cast<size_t>(16 * 16 * ir.height);
+    std::vector<float> gd(per), cd(per);
+    std::vector<uint8_t> gf(per), cf(per);
+    generated_host_chunk(ir, t, cx, cz, gd.data(), gf.data());
     VolumeEvaluator ev(ir, t);
-    auto ref = [&](int node, int x, int y, int z) {
-        float v;
-        Volume vol{1, 1, 1, x, y, z, 1, 1, 1};
-        ev.clear_caches();
-        ev.sample(node, vol, &v);
-        return v;
-    };
+    cpu_generate_chunk(ir, ev, cx, cz, cd.data(), cf.data());
     int bad = 0;
-    std::vector<float> mv(4096);
-    std::vector<uint8_t> mh_storage(4096);
-    bool* mh = reinterpret_cast<bool*>(mh_storage.data());
-    float col[25][gen::kNumColumns > 0 ? gen::kNumColumns : 1];
-    for (int k = 0; k < kCols; ++k) {
-        int x = cx * 16 + (k % 5) * 4, z = cz * 16 + (k / 5) * 4;
-        gen::eval_columns_dbg(T, x, z, col[k], mv.data(), mh);
-        for (int r = 0; r < gen::kReachCount_ColumnEval; ++r) {
-            if (!mh[r]) continue;
-            int id = gen::kReach_ColumnEval[r];
-            float want = ref(id, x, 0, z);
-            if (f2bits(want) != f2bits(mv[r]) && bad < 12) {
-                std::printf("  column (%d,%d) node %d: generated %.9g (0x%08x) reference %.9g (0x%08x)\n", x, z, id, mv[r], f2bits(mv[r]), want, f2bits(want));
-                ++bad;
-            }
-        }
-    }
-    const int rows = ir.height / 8 + 1;
-    for (int k = 0; k < kCols && bad < 12; ++k)
-        for (int row = 0; row < rows && bad < 12; ++row) {
-            int x = cx * 16 + (k % 5) * 4, z = cz * 16 + (k / 5) * 4, y = ir.min_y + row * 8;
-            float out[gen::kNumChannels];
-            gen::eval_corners_dbg(T, x, y, z, col[k], out, mv.data(), mh);
-            for (int r = 0; r < gen::kReachCount_CornerEval; ++r) {
-                if (!mh[r]) continue;
-                int id = gen::kReach_CornerEval[r];
-                float want = ref(id, x, y, z);
-                if (f2bits(want) != f2bits(mv[r]) && bad < 12) {
-                    std::printf("  corner (%d,%d,%d) node %d (%d): generated %.9g (0x%08x) reference %.9g (0x%08x)\n", x, y, z, id,
-                                static_cast<int>(ir.at(id).type), mv[r], f2bits(mv[r]), want, f2bits(want));
-                    ++bad;
-                }
-            }
+    for (size_t i = 0; i < per && bad < 12; ++i)
+        if (f2bits(gd[i]) != f2bits(cd[i])) {
+            int x = static_cast<int>(i & 15), z = static_cast<int>((i >> 4) & 15), y = ir.min_y + static_cast<int>(i >> 8);
+            std::printf("  block (%d,%d,%d): generated %.9g (0x%08x) reference %.9g (0x%08x)\n", cx * 16 + x, y, cz * 16 + z, gd[i], f2bits(gd[i]), cd[i],
+                        f2bits(cd[i]));
+            ++bad;
         }
     return bad;
 }

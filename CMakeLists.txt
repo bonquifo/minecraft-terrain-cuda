@@ -29,6 +29,7 @@ add_compile_options($<$<COMPILE_LANGUAGE:CUDA>:-fmad=false> $<$<COMPILE_LANGUAGE
 set(MCCUDA_DATA_DIR "${CMAKE_SOURCE_DIR}/data" CACHE PATH "Oracle/game data directory (gitignored)")
 set(MCCUDA_MC_VERSION "26.3")
 set(MCCUDA_IR "${MCCUDA_DATA_DIR}/gamedata/${MCCUDA_MC_VERSION}/overworld_ir.json")
+set(MCCUDA_TERRAIN "${MCCUDA_DATA_DIR}/gamedata/${MCCUDA_MC_VERSION}/overworld_terrain.json")
 
 add_subdirectory(cpu)
 add_subdirectory(cuda)

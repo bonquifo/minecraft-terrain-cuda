@@ -15,8 +15,13 @@ elseif (-not $env:JAVA_HOME -and (Test-Path "$PSScriptRoot\..\.tools\jdk-25")) {
 if (-not $env:JAVA_HOME) { throw "JAVA_HOME must point to a JDK 25 (winget install EclipseAdoptium.Temurin.25.JDK)" }
 Push-Location $PSScriptRoot
 try {
-    & .\gradlew.bat --console=plain -q oracle "-Pcmd=$Command"
-    if ($LASTEXITCODE -ne 0) { throw "oracle failed with exit code $LASTEXITCODE" }
+    # The JDK prints deprecation warnings on stderr; with 'Stop', Windows PowerShell would turn
+    # them into terminating errors when output is redirected. Success is the exit code.
+    $ErrorActionPreference = 'Continue'
+    & .\gradlew.bat --console=plain -q oracle "-Pcmd=$Command" 2>&1 | ForEach-Object { "$_" }
+    $code = $LASTEXITCODE
+    $ErrorActionPreference = 'Stop'
+    if ($code -ne 0) { throw "oracle failed with exit code $code" }
 } finally {
     Pop-Location
 }

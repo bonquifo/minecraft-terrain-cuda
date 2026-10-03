@@ -1,0 +1,31 @@
+// Reference oracle: calls vanilla 26.3 world generation code headlessly and dumps
+// reference data. Loom only supplies the unobfuscated game jar and its libraries;
+// the oracle runs as a plain JVM main (no Fabric Loader, no server, no world on disk).
+plugins {
+	id 'net.fabricmc.fabric-loom' version "${loom_version}"
+}
+
+loom {
+	serverOnlyMinecraftJar()
+}
+
+dependencies {
+	minecraft "com.mojang:minecraft:${project.minecraft_version}"
+}
+
+java {
+	toolchain { languageVersion = JavaLanguageVersion.of(25) }
+}
+
+def dataRoot = rootProject.file("../data")
+
+tasks.register('oracle', JavaExec) {
+	group = 'oracle'
+	description = 'Run an oracle command: -Pcmd="<command> [args]"'
+	classpath = sourceSets.main.runtimeClasspath
+	mainClass = 'mccuda.oracle.Main'
+	workingDir = layout.buildDirectory.dir('run').get().asFile
+	jvmArgs = ['-Xmx16G', '-XX:+UseParallelGC']
+	doFirst { workingDir.mkdirs() }
+	args = ((project.findProperty('cmd') ?: 'help').toString().split(' ').toList()) + ['--data', dataRoot.absolutePath]
+}

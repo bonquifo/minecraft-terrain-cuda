@@ -219,6 +219,50 @@ MCC_HD MCC_FI float smeared_volume(const PerlinOctave& o, int32_t bx, int32_t by
     return volume_lerp(c, ax, ay, az, fudged);
 }
 
+// ---- tabulated coordinate setup -------------------------------------------------
+// In addToVolume each axis's coordinate setup (scale, wrap, offset, floor, fraction,
+// smoothstep) depends on that axis's block coordinate only, and it is the only FP64
+// work in a sample. AxisRec holds its exact result, so it can be computed once per
+// distinct coordinate and reused (identical arithmetic, so identical bits).
+struct AxisRec {
+    int32_t f;   // lattice cell (floor)
+    float r;     // relative coordinate handed to the gradients / lerp (fudged for smeared y)
+    float a;     // smoothstep weight
+};
+
+// x or z of PerlinNoise/SmearedPerlinNoise.addToVolume, and y of PerlinNoise.addToVolume.
+MCC_HD MCC_FI AxisRec axis_plain(int32_t b, double scale, double offset) {
+    double v = gn_wrap(static_cast<double>(b) * scale) + offset;
+    int32_t f = mth_floor(v);
+    float r = static_cast<float>(v - static_cast<double>(f));
+    return {f, r, mth_smoothstep(r)};
+}
+
+// y of SmearedPerlinNoise.addToVolume.
+MCC_HD MCC_FI AxisRec axis_smeared_y(int32_t b, double scale, double offset, double smear) {
+    double originalY = static_cast<double>(b) * scale;
+    double y = gn_wrap(originalY) + offset;
+    int32_t f = mth_floor(y);
+    double relativeY = y - static_cast<double>(f);
+    float a = mth_smoothstep(static_cast<float>(relativeY));
+    float fudged = static_cast<float>(relativeY - smeared_fudge_y(originalY, relativeY, smear));
+    return {f, fudged, a};
+}
+
+// stack_add_volume with each layer's coordinate setup read from per-axis records.
+MCC_HD MCC_FI float stack_volume_tab(float acc, const StackLayer* layers, int count, const PerlinOctave* octaves,
+                                     const AxisRec* ax, const AxisRec* ay, const AxisRec* az, float amplitude) {
+    for (int i = 0; i < count; ++i) {
+        const StackLayer& L = layers[i];
+        float amp = amplitude * L.amplitude;
+        const AxisRec X = ax[i], Y = ay[i], Z = az[i];
+        VolumeCorners c = volume_corners(octaves[L.octave], X.f, Y.f, Z.f, X.r, Z.r);
+        float v = volume_lerp(c, X.a, Y.a, Z.a, Y.r);
+        acc = acc + amp * v;
+    }
+    return acc;
+}
+
 // NoiseStack.get(x, y, z) over plain Perlin layers.
 MCC_HD MCC_FI float stack_get(const StackLayer* layers, int count, const PerlinOctave* octaves, double x, double y, double z) {
     float value = 0.0f;

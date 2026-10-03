@@ -61,6 +61,7 @@ struct TerrainTables {
     int clay_bands[192];
     dev::Positional random, aquifer_random, ore_random, gradient_random[kMaxGradientRandoms];
     int64_t zoom_seed;
+    const double* zoom_sq;                         // dev::zoom_square table (8192)
     int st_surface, st_surface_secondary, st_clay_offset, st_badlands_pillar, st_badlands_roof, st_badlands_surface, st_iceberg_pillar,
         st_iceberg_roof, st_iceberg_surface;
     int aq_min_grid_y, aq_grid_y;                  // aquifer grid (y extent is chunk-independent)
@@ -98,7 +99,7 @@ struct SurfaceCtx {
     }
     __device__ int biome_at(int bx, int by, int bz) const {
         int qx, qy, qz;
-        dev::zoom_quart(c_tt.zoom_seed, bx, by, bz, qx, qy, qz);
+        dev::zoom_quart_tab(c_tt.zoom_seed, c_tt.zoom_sq, bx, by, bz, qx, qy, qz);
         return quart_biome(qx, qy, qz);
     }
     __device__ double noise_stack(int st, double nx, double ny, double nz) const {
@@ -337,6 +338,11 @@ __global__ void k_biome_chain(int nb, const int64_t* targets, const int32_t* fir
                 }
 }
 
+__global__ void k_zoom_squares(double* sq) {
+    int t = blockIdx.x * blockDim.x + threadIdx.x;
+    if (t < 8192) sq[t] = dev::zoom_square(t);
+}
+
 // ---- density ------------------------------------------------------------------------
 
 __global__ void k_columns(const ChunkXZ* chunks, int n, float* col) {
@@ -346,15 +352,38 @@ __global__ void k_columns(const ChunkXZ* chunks, int n, float* col) {
     gen::eval_columns(c_tt.rt, chunks[c].x * 16 + (k % 5) * 4, chunks[c].z * 16 + (k / 5) * 4, col + static_cast<size_t>(idx) * gen::kNumColumns);
 }
 
-__global__ void k_corners(const ChunkXZ* chunks, int n, const float* col, float* corners, int rows) {
+// Per-layer constants of the axis sites (gen::kAxisSites), in AxisRec table order.
+struct AxisLayer {
+    double xs, ys;          // xzScale * frequency, yScale * frequency
+    double ox, oy, oz, smear;
+    int smeared;
+};
+
+// x and z coordinate records of every axis-site layer for the 5 corner columns per
+// axis of each chunk: ax/az[(c * 5 + k) * sl + j].
+__global__ void k_axis_xz(const ChunkXZ* chunks, int n, const AxisLayer* layers, int sl, AxisRec* ax, AxisRec* az) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n * 5 * sl) return;
+    int j = idx % sl, k = (idx / sl) % 5, c = idx / (5 * sl);
+    const AxisLayer& L = layers[j];
+    ax[idx] = axis_plain(chunks[c].x * 16 + 4 * k, L.xs, L.ox);
+    az[idx] = axis_plain(chunks[c].z * 16 + 4 * k, L.xs, L.oz);
+}
+
+__global__ void k_corners(const ChunkXZ* chunks, int n, const float* col, float* corners, int rows, const AxisRec* axis_x, const AxisRec* axis_y,
+                          const AxisRec* axis_z, int sl) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= n * kCols * rows) return;
     int row = idx % rows, k = (idx / rows) % kCols, c = idx / (rows * kCols);
-    int x = chunks[c].x * 16 + (k % 5) * 4, z = chunks[c].z * 16 + (k / 5) * 4, y = c_tt.min_y + row * 8;
+    int kx = k % 5, kz = k / 5;
+    int x = chunks[c].x * 16 + kx * 4, z = chunks[c].z * 16 + kz * 4, y = c_tt.min_y + row * 8;
     const float* cv = col + (static_cast<size_t>(c) * kCols + k) * gen::kNumColumns;
+    const AxisRec* ax = axis_x + (static_cast<size_t>(c) * 5 + kx) * sl;
+    const AxisRec* az = axis_z + (static_cast<size_t>(c) * 5 + kz) * sl;
+    const AxisRec* ay = axis_y + static_cast<size_t>(row) * sl;
     float out[kAllChannels];
-    gen::eval_corners(c_tt.rt, x, y, z, cv, out);
-    if (gen::kNumOreChannels > 0) gen::eval_ore_corners(c_tt.rt, x, y, z, cv, out + gen::kNumChannels);
+    gen::eval_corners_tab(c_tt.rt, x, y, z, cv, ax, ay, az, out);
+    if (gen::kNumOreChannels > 0) gen::eval_ore_corners_tab(c_tt.rt, x, y, z, cv, ax, ay, az, out + gen::kNumChannels);
     for (int ch = 0; ch < kAllChannels; ++ch) corners[((static_cast<size_t>(c) * kAllChannels + ch) * kCols + k) * rows + row] = out[ch];
 }
 
@@ -796,6 +825,10 @@ struct FullTerrainGenerator::Impl {
     int4* d_cells = nullptr;
     int *d_skip = nullptr, *d_h0 = nullptr, *d_h1 = nullptr, *d_h2 = nullptr;
     int bcap = 0;                  // biome-chunk capacity of the biome buffers
+    int sl = 0;                    // axis-site layers (AxisRec records per coordinate)
+    AxisLayer* d_axis_layers = nullptr;
+    double* d_zoom_sq = nullptr;
+    AxisRec *d_axis_x = nullptr, *d_axis_y = nullptr, *d_axis_z = nullptr;
     cudaEvent_t ev[9];
 
     Impl(const IR& ir_, const TerrainModel& tm_, int mb) : ir(ir_), tm(tm_), max_batch(mb) {
@@ -818,12 +851,16 @@ struct FullTerrainGenerator::Impl {
         check(cudaMalloc(&d_h2, sizeof(int) * mb * 256), "malloc");
         for (auto& e : ev) cudaEventCreate(&e);
         check(cudaDeviceSetLimit(cudaLimitStackSize, 16 * 1024), "stack limit");
+        check(cudaMalloc(&d_zoom_sq, sizeof(double) * 8192), "malloc zoom table");
+        k_zoom_squares<<<32, 256>>>(d_zoom_sq);
+        check(cudaGetLastError(), "zoom table");
         if (tm.palette.size() > 64 || tm.biomes.size() > 128) throw std::runtime_error("palette/biome tables too large");
     }
 
     ~Impl() {
         void* ptrs[] = {d_octaves, d_layers, d_tree, d_tree_children, d_leaf_biome, d_leaf_node, d_chunks, d_bchunks, d_nb, d_bcol, d_targets, d_mindist,
-                        d_firstmin, d_bbiomes, d_col, d_corners, d_grid, d_prelim, d_skip, d_cells, d_blocks, d_h0, d_h1, d_h2};
+                        d_firstmin, d_bbiomes, d_col, d_corners, d_grid, d_prelim, d_skip, d_cells, d_blocks, d_h0, d_h1, d_h2,
+                        d_axis_layers, d_axis_x, d_axis_y, d_axis_z, d_zoom_sq};
         for (void* p : ptrs) cudaFree(p);
         for (auto& e : ev) cudaEventDestroy(e);
     }
@@ -849,6 +886,40 @@ struct FullTerrainGenerator::Impl {
         check(cudaMalloc(&d_firstmin, sizeof(int32_t) * q), "malloc");
         check(cudaMalloc(&d_bbiomes, q), "malloc");
         bcap = nbk;
+    }
+
+    // Axis-site layer constants, record offsets, and the y records of the corner rows
+    // (seed-dependent only). The y records are computed here on the host with the same
+    // exact functions the device would use.
+    void build_axis_tables(RouterTables& rt, const SeedTables& t) {
+        if (gen::kNumAxisSites > kMaxAxisSites) throw std::runtime_error("too many axis sites");
+        std::vector<AxisLayer> layers;
+        for (int k = 0; k < gen::kNumAxisSites; ++k) {
+            const AxisSite& site = gen::kAxisSites[k];
+            StackRef2 ref = site.kind == 0 ? rt.stacks[site.index]
+                          : site.kind == 1 ? rt.blended[site.index].main
+                          : site.kind == 2 ? rt.blended[site.index].min_limit : rt.blended[site.index].max_limit;
+            rt.axis_off[k] = static_cast<int>(layers.size());
+            for (int i = 0; i < ref.count; ++i) {
+                const StackLayer& L = t.layers[static_cast<size_t>(ref.first + i)];
+                const PerlinOctave& o = t.octaves[static_cast<size_t>(L.octave)];
+                layers.push_back({site.xz * L.frequency, site.y * L.frequency, o.ox, o.oy, o.oz, o.smear, site.smeared});
+            }
+        }
+        sl = static_cast<int>(layers.size());
+        std::vector<AxisRec> ytab(static_cast<size_t>(rows) * sl);
+        for (int row = 0; row < rows; ++row)
+            for (int j = 0; j < sl; ++j) {
+                const AxisLayer& L = layers[static_cast<size_t>(j)];
+                const int by = ir.min_y + row * 8;
+                ytab[static_cast<size_t>(row) * sl + j] = L.smeared ? axis_smeared_y(by, L.ys, L.oy, L.smear) : axis_plain(by, L.ys, L.oy);
+            }
+        upload(d_axis_layers, layers);
+        upload(d_axis_y, ytab);
+        cudaFree(d_axis_x);
+        cudaFree(d_axis_z);
+        check(cudaMalloc(&d_axis_x, sizeof(AxisRec) * static_cast<size_t>(max_batch) * 5 * std::max(sl, 1)), "malloc axis x");
+        check(cudaMalloc(&d_axis_z, sizeof(AxisRec) * static_cast<size_t>(max_batch) * 5 * std::max(sl, 1)), "malloc axis z");
     }
 
     void set_seed(int64_t s) {
@@ -905,6 +976,7 @@ struct FullTerrainGenerator::Impl {
             tt.gradient_random[i] = {p.lo(), p.hi()};
         }
         tt.zoom_seed = seed->zoom_seed;
+        tt.zoom_sq = d_zoom_sq;
         auto st = [&](const char* k) {
             for (int i = 0; i < gen::kNumNoises; ++i)
                 if (std::string(gen::kNoiseKeys[i]) == k) return i;
@@ -926,6 +998,7 @@ struct FullTerrainGenerator::Impl {
             for (int j = 0; j < 3; ++j) tt.ore_state[k][j] = gen::kOreRuleState[k][j];
             tt.ore_raw_chance[k] = bits2f(gen::kOreRuleRawChanceBits[k]);
         }
+        build_axis_tables(tt.rt, t);
         check(cudaMemcpyToSymbol(c_tt, &tt, sizeof(tt)), "upload terrain tables");
     }
 
@@ -960,7 +1033,8 @@ struct FullTerrainGenerator::Impl {
         check(cudaGetLastError(), "biome kernels");
         cudaEventRecord(ev[2]);
         k_columns<<<grid(static_cast<size_t>(n) * kCols, tb), tb>>>(d_chunks, n, d_col);
-        k_corners<<<grid(static_cast<size_t>(n) * kCols * rows, tb), tb>>>(d_chunks, n, d_col, d_corners, rows);
+        k_axis_xz<<<grid(static_cast<size_t>(n) * 5 * sl, tb), tb>>>(d_chunks, n, d_axis_layers, sl, d_axis_x, d_axis_z);
+        k_corners<<<grid(static_cast<size_t>(n) * kCols * rows, tb), tb>>>(d_chunks, n, d_col, d_corners, rows, d_axis_x, d_axis_y, d_axis_z, sl);
         check(cudaGetLastError(), "noise kernels");
         cudaEventRecord(ev[3]);
         k_surface_grid<<<grid(static_cast<size_t>(n) * (kGridCells + 4), tb), tb>>>(d_chunks, n, d_grid, d_prelim);

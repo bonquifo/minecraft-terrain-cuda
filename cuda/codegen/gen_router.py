@@ -16,6 +16,8 @@ change a result). Contexts:
   ColumnA / ColumnB  y = 0 values of slice inputs on the 4-block lattice
                      (A: read by the 4x8 corner contexts, B: by the climate context)
   CornerEval / OreCornerEval  interpolated-channel inputs at cell corners
+  CornerEvalTab / OreCornerEvalTab  the same, with every noise's coordinate setup
+                     read from per-axis AxisRec tables (kAxisSites) instead of computed
   BlockEval / OreBlockEval    per-block roots; interpolated nodes read channels
   QuartEval          the six climate roots at quart positions
   VolY0Eval          find_top_surface upper bound, volume semantics, y = 0
@@ -54,8 +56,9 @@ def dlit_v(v):
 
 
 class Ctx:
-    def __init__(self, name, sem, slices, interp, chans=None, col_nodes=None):
+    def __init__(self, name, sem, slices, interp, chans=None, col_nodes=None, axis=False):
         self.name = name
+        self.axis = axis          # noises read tabulated coordinates (members ax, ay, az)
         self.sem = sem            # 'vol' | 'pt'
         self.slices = slices      # 'col' | 'ident_y0' | 'sub' | 'subst'
         self.interp = interp      # 'chan' | 'pass' | 'err'
@@ -73,6 +76,7 @@ class Gen:
         self.noise_keys = sorted(ir.noises.keys())
         self.noise_index = {k: i for i, k in enumerate(self.noise_keys)}
         self.blended_ids = sorted(n['id'] for n in ir.nodes.values() if n['t'] == 'blended_noise')
+        self.axis_sites = []      # (kind, index, xz, y, smeared)
         R = ir.roots
         self.root = R['final_density']
         self.ore_rules = []
@@ -183,6 +187,16 @@ class Gen:
 
     def stack(self, key):
         return 'T.stacks[%d]' % self.noise_index[key]
+
+    def axis_site(self, kind, index, xz, y, smeared):
+        key = (kind, index, float(xz).hex(), float(y).hex(), smeared)
+        if key not in self.axis_sites:
+            self.axis_sites.append(key)
+        return self.axis_sites.index(key)
+
+    @staticmethod
+    def axis_args(k):
+        return 'ax + T.axis_off[%d], ay + T.axis_off[%d], az + T.axis_off[%d]' % (k, k, k)
 
     # ---- contexts ----------------------------------------------------------------
     def reach(self, ctx, roots):
@@ -300,7 +314,10 @@ class Gen:
             xz, ys = dlit(n['xz_scale']), dlit(n['y_scale'])
             L.append('const mcc::StackRef2& s = %s;' % self.stack(n['noise']))
             if n['shift_x_zero'] and n['shift_y_zero'] and n['shift_z_zero']:
-                if vol:
+                if vol and ctx.axis:
+                    k = self.axis_site(0, self.noise_index[n['noise']], f64(n['xz_scale']), f64(n['y_scale']), 0)
+                    L.append('float v = mcc::stack_volume_tab(0.0f, T.layers + s.first, s.count, T.octaves, %s, 1.0f);' % self.axis_args(k))
+                elif vol:
                     L.append('float v = mcc::stack_add_volume(0.0f, T.layers + s.first, s.count, T.octaves, false, x, y, z, %s, %s, 1.0f);' % (xz, ys))
                 else:
                     L.append('float v = mcc::stack_get(T.layers + s.first, s.count, T.octaves, static_cast<double>(x) * %s, static_cast<double>(y) * %s, '
@@ -335,7 +352,14 @@ class Gen:
             L.append('const mcc::BlendedRef& b = T.blended[%d];' % bi)
             L.append('const double xzm = %s, ym = %s;' % (dlit_v(xzm), dlit_v(ym)))
             L.append('const double mxz = xzm / %s, my = ym / %s;' % (dlit(n['xz_factor']), dlit(n['y_factor'])))
-            if vol:
+            if vol and ctx.axis:
+                scales = {'mxz': xzm / f64(n['xz_factor']), 'my': ym / f64(n['y_factor']), 'xzm': xzm, 'ym': ym}
+                kinds = {'main': 1, 'min_limit': 2, 'max_limit': 3}
+
+                def sample(st, sx, sy):
+                    k = self.axis_site(kinds[st], bi, scales[sx], scales[sy], 1)
+                    return 'mcc::stack_volume_tab(0.0f, T.layers + b.%s.first, b.%s.count, T.octaves, %s, 1.0f)' % (st, st, self.axis_args(k))
+            elif vol:
                 def sample(st, sx, sy):
                     return 'mcc::stack_add_volume(0.0f, T.layers + b.%s.first, b.%s.count, T.octaves, true, x, y, z, %s, %s, 1.0f)' % (st, st, sx, sy)
             else:
@@ -616,6 +640,11 @@ class Gen:
         main += self.emit_struct(Ctx('ColumnB', 'vol', 'ident_y0', 'err'), [N[c]['in'] for c in self.col_b])
         main += self.emit_struct(Ctx('CornerEval', 'vol', 'col', 'pass', col_nodes=self.col_a), [N[c]['in'] for c in self.chans])
         main += self.emit_struct(Ctx('OreCornerEval', 'vol', 'col', 'pass', col_nodes=self.col_a), [N[c]['in'] for c in self.ore_chans])
+        axis_member = 'const mcc::AxisRec *ax, *ay, *az;'
+        main += self.emit_struct(Ctx('CornerEvalTab', 'vol', 'col', 'pass', col_nodes=self.col_a, axis=True), [N[c]['in'] for c in self.chans],
+                                 extra_member=axis_member)
+        main += self.emit_struct(Ctx('OreCornerEvalTab', 'vol', 'col', 'pass', col_nodes=self.col_a, axis=True), [N[c]['in'] for c in self.ore_chans],
+                                 extra_member=axis_member)
         main += self.emit_struct(Ctx('BlockEval', 'vol', 'subst', 'chan', chans=self.chans), [self.root])
         main += self.emit_struct(Ctx('OreBlockEval', 'vol', 'subst', 'chan', chans=self.chans + self.ore_chans), self.ore_roots)
         main += self.emit_struct(Ctx('QuartEval', 'vol', 'col', 'err', col_nodes=self.col_b), self.climate_roots)
@@ -626,6 +655,10 @@ class Gen:
         o += self.pre
         o += main
         o.append('')
+        o.append('// Volume noise call sites of the *Tab contexts; each has one AxisRec per layer and coordinate.')
+        o.append('constexpr int kNumAxisSites = %d;' % len(self.axis_sites))
+        o.append('static const mcc::AxisSite kAxisSites[kNumAxisSites > 0 ? kNumAxisSites : 1] = {%s};' % (', '.join(
+            '{%d, %d, %s, %s, %d}' % (kd, ix, dlit_v(float.fromhex(xz)), dlit_v(float.fromhex(y)), sm) for kd, ix, xz, y, sm in self.axis_sites) or '{}'))
         self.entry(o, 'void eval_columns(const RouterTables& T, int32_t x, int32_t z, float* out)', 'ColumnA e{T, x, 0, z};',
                    ['out[%d] = e.n%d();' % (k, N[c]['in']) for k, c in enumerate(self.col_a)])
         self.entry(o, 'void eval_climate_columns(const RouterTables& T, int32_t x, int32_t z, float* out)', 'ColumnB e{T, x, 0, z};',
@@ -634,6 +667,11 @@ class Gen:
                    ['out[%d] = e.n%d();' % (k, N[c]['in']) for k, c in enumerate(self.chans)])
         self.entry(o, 'void eval_ore_corners(const RouterTables& T, int32_t x, int32_t y, int32_t z, const float* col, float* out)',
                    'OreCornerEval e{T, x, y, z, col};', ['out[%d] = e.n%d();' % (k, N[c]['in']) for k, c in enumerate(self.ore_chans)])
+        tab_args = 'const mcc::AxisRec* ax, const mcc::AxisRec* ay, const mcc::AxisRec* az'
+        self.entry(o, 'void eval_corners_tab(const RouterTables& T, int32_t x, int32_t y, int32_t z, const float* col, %s, float* out)' % tab_args,
+                   'CornerEvalTab e{T, x, y, z, col, ax, ay, az};', ['out[%d] = e.n%d();' % (k, N[c]['in']) for k, c in enumerate(self.chans)])
+        self.entry(o, 'void eval_ore_corners_tab(const RouterTables& T, int32_t x, int32_t y, int32_t z, const float* col, %s, float* out)' % tab_args,
+                   'OreCornerEvalTab e{T, x, y, z, col, ax, ay, az};', ['out[%d] = e.n%d();' % (k, N[c]['in']) for k, c in enumerate(self.ore_chans)])
         self.entry(o, 'float eval_block(const RouterTables& T, int32_t x, int32_t y, int32_t z, const float* ch)', 'BlockEval e{T, x, y, z, ch};',
                    ['return e.n%d();' % self.root])
         o.append('// ch: density channels followed by ore channels. which = 2 * rule + (0 density | 1 richness)')
@@ -684,8 +722,9 @@ def main():
     code = gen.generate()
     with open(args.out, 'w', encoding='utf-8', newline='\n') as fh:
         fh.write(code)
-    print('gen_router: %d+%d channels, %d+%d column nodes, %d noises, %d ore rules, %d point roots -> %s' % (
-        len(gen.chans), len(gen.ore_chans), len(gen.col_a), len(gen.col_b), len(gen.noise_keys), len(gen.ore_rules), len(gen.point_roots), args.out))
+    print('gen_router: %d+%d channels, %d+%d column nodes, %d noises, %d ore rules, %d point roots, %d axis sites -> %s' % (
+        len(gen.chans), len(gen.ore_chans), len(gen.col_a), len(gen.col_b), len(gen.noise_keys), len(gen.ore_rules), len(gen.point_roots),
+        len(gen.axis_sites), args.out))
 
 
 if __name__ == '__main__':

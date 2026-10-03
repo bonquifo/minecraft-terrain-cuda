@@ -1,0 +1,352 @@
+[05:35:16] run_all.py start, quick=False
+[05:35:16] gpu state start: NVIDIA GeForce RTX 5090, 591.86, 315 MHz, 3090 MHz, 810 MHz, 32, 27.73 W, 600.00 W, P5
+[05:35:17] $ C:\MinecraftCuda\build\tests\mccuda_tests.exe --set full
+    [unit] Java semantics, gradient table, MD5, host FP contraction
+      unit                               PASS  (72 checked, 0 mismatches)
+    [rng] C:/MinecraftCuda/data/oracle/26.3/rng.json
+      seedFromHashOf (MD5)               PASS  (12 checked, 0 mismatches)
+      Xoroshiro128++ source              PASS  (1112 checked, 0 mismatches)
+      legacy LCG source                  PASS  (968 checked, 0 mismatches)
+    [noise] C:/MinecraftCuda/data/oracle/26.3/noise
+      seeds checked: 32
+      noise tables + samples             PASS  (506240 checked, 0 mismatches)
+    [zoom] FP32-filtered BiomeManager zoom vs FP64 reference, random blocks
+      zoom fast path                     PASS  (2147483648 checked, 0 mismatches; 50492 near ties took the FP64 path)
+    [named] L1 named density functions, CPU reference port
+      15 chunk dumps x 20 functions
+      L1 named functions                 PASS  (29491200 checked, 0 mismatches)
+    [chunks] C:/MinecraftCuda/data/oracle/26.3/full  impl=cpu
+      576 chunks over 32 seeds, generator time 2.74 s
+      L2 final density (cpu)             PASS  (56623104 checked, 0 mismatches)
+      L3 block fill (cpu)                PASS  (56623104 checked, 0 mismatches)
+    [chunks] C:/MinecraftCuda/data/oracle/26.3/full  impl=gen-host
+      576 chunks over 32 seeds, generator time 2.07 s
+      L2 final density (gen-host)        PASS  (56623104 checked, 0 mismatches)
+      L3 block fill (gen-host)           PASS  (56623104 checked, 0 mismatches)
+    [chunks] C:/MinecraftCuda/data/oracle/26.3/full  impl=cuda-v0
+      576 chunks over 32 seeds, generator time 0.28 s
+      L2 final density (cuda-v0)         PASS  (56623104 checked, 0 mismatches)
+      L3 block fill (cuda-v0)            PASS  (56623104 checked, 0 mismatches)
+    [terrain] C:/MinecraftCuda/data/oracle/26.3/full  impl=cpu
+      576 chunks, generator time 10.61 s
+      biomes (cpu)                       PASS  (884736 checked, 0 mismatches)
+      aquifer fill (cpu)                 PASS  (56623104 checked, 0 mismatches)
+      terrain (cpu)                      PASS  (56623104 checked, 0 mismatches)
+    [terrain] C:/MinecraftCuda/data/oracle/26.3/full  impl=cuda-terrain
+      576 chunks, generator time 0.98 s
+      biomes (cuda-terrain)              PASS  (884736 checked, 0 mismatches)
+      aquifer fill (cuda-terrain)        PASS  (56623104 checked, 0 mismatches)
+      terrain (cuda-terrain)             PASS  (56623104 checked, 0 mismatches)
+    
+    RESULT: PASS (bit-exact)
+[05:35:42] $ C:\MinecraftCuda\oracle\gradlew.bat --console=plain -q oracle -Pcmd=bench-terrain threads=1 region=16 reps=1 warmup=0 seed=123456789 x0=0 z0=0 tag=verify_origin reset=1 dump=1
+    oracle: minecraft 26.3, java 25.0.4.1, bootstrap 2.8 s
+    terrain model: palette 37 states, 67 biomes, 2 ore veins -> %USERPROFILE%\AppData\Local\Temp\mccuda_terrain7614185325847879520.json
+    bench-terrain verify_origin threads=1 rep 0: 2.617 s (biomes 0.278 s, fill+surface 2.339 s), 97.8 chunks/s
+    [05:35:48] [main/INFO]: [STDOUT]: bench-terrain: wrote C:\MinecraftCuda\data\bench\verify_origin_terrain.u16
+    [05:35:48] [main/INFO]: [STDOUT]: bench-terrain: wrote C:\MinecraftCuda\data\bench\verify_origin_t1.csv
+    oracle: bench-terrain done in 5.8 s
+[05:35:48] $ C:\MinecraftCuda\build\bench\mccuda_bench.exe --mode terrain-gpu --region 16 --x0 0 --z0 0 --seed 123456789 --reps 1 --warmup 0 --batch 256 --verify C:\MinecraftCuda\data\bench\verify_origin_terrain.u16 --tag verify_origin --out C:\MinecraftCuda\bench\results\final\verify_gpu.csv
+    device: NVIDIA GeForce RTX 5090 (sm_120, 170 SMs)
+    mode terrain-gpu, region 16x16 at (0,0), seed 123456789, reps 1 (+0 warmup), batch 256, threads 1, streams 2
+    terrain-gpu: seed setup 0.013 s (host tables + upload, once per seed, not in the timings)
+    cuda-terrain: 256 chunks x 1 reps: 29843.1 chunks/s (sd 0.0, 0.00%), 0.034 ms/chunk
+    verify vs C:\MinecraftCuda\data\bench\verify_origin_terrain.u16: 25165824 blocks, 0 mismatches -> bit-exact
+[05:35:49] $ C:\MinecraftCuda\build\bench\mccuda_bench.exe --mode terrain-cpu --region 16 --x0 0 --z0 0 --seed 123456789 --reps 1 --warmup 0 --threads 32 --verify C:\MinecraftCuda\data\bench\verify_origin_terrain.u16 --tag verify_origin --out C:\MinecraftCuda\bench\results\final\verify_cpu.csv
+    device: NVIDIA GeForce RTX 5090 (sm_120, 170 SMs)
+    mode terrain-cpu, region 16x16 at (0,0), seed 123456789, reps 1 (+0 warmup), batch 256, threads 32, streams 2
+    cpu-port-terrain: 256 chunks x 1 reps: 915.5 chunks/s (sd 0.0, 0.00%), 1.092 ms/chunk
+    verify vs C:\MinecraftCuda\data\bench\verify_origin_terrain.u16: 25165824 blocks, 0 mismatches -> bit-exact
+[05:35:49] $ C:\MinecraftCuda\oracle\gradlew.bat --console=plain -q oracle -Pcmd=bench-terrain threads=1 region=16 reps=1 warmup=0 seed=123456789 x0=-300 z0=-220 tag=verify_negative reset=1 dump=1
+    oracle: minecraft 26.3, java 25.0.4.1, bootstrap 2.7 s
+    terrain model: palette 37 states, 67 biomes, 2 ore veins -> %USERPROFILE%\AppData\Local\Temp\mccuda_terrain13543628518943363646.json
+    bench-terrain verify_negative threads=1 rep 0: 2.913 s (biomes 0.348 s, fill+surface 2.566 s), 87.9 chunks/s
+    [05:35:56] [main/INFO]: [STDOUT]: bench-terrain: wrote C:\MinecraftCuda\data\bench\verify_negative_terrain.u16
+    [05:35:56] [main/INFO]: [STDOUT]: bench-terrain: wrote C:\MinecraftCuda\data\bench\verify_negative_t1.csv
+    oracle: bench-terrain done in 6.0 s
+[05:35:56] $ C:\MinecraftCuda\build\bench\mccuda_bench.exe --mode terrain-gpu --region 16 --x0 -300 --z0 -220 --seed 123456789 --reps 1 --warmup 0 --batch 256 --verify C:\MinecraftCuda\data\bench\verify_negative_terrain.u16 --tag verify_negative --out C:\MinecraftCuda\bench\results\final\verify_gpu.csv
+    device: NVIDIA GeForce RTX 5090 (sm_120, 170 SMs)
+    mode terrain-gpu, region 16x16 at (-300,-220), seed 123456789, reps 1 (+0 warmup), batch 256, threads 1, streams 2
+    terrain-gpu: seed setup 0.012 s (host tables + upload, once per seed, not in the timings)
+    cuda-terrain: 256 chunks x 1 reps: 26167.3 chunks/s (sd 0.0, 0.00%), 0.038 ms/chunk
+    verify vs C:\MinecraftCuda\data\bench\verify_negative_terrain.u16: 25165824 blocks, 0 mismatches -> bit-exact
+[05:35:56] $ C:\MinecraftCuda\build\bench\mccuda_bench.exe --mode terrain-cpu --region 16 --x0 -300 --z0 -220 --seed 123456789 --reps 1 --warmup 0 --threads 32 --verify C:\MinecraftCuda\data\bench\verify_negative_terrain.u16 --tag verify_negative --out C:\MinecraftCuda\bench\results\final\verify_cpu.csv
+    device: NVIDIA GeForce RTX 5090 (sm_120, 170 SMs)
+    mode terrain-cpu, region 16x16 at (-300,-220), seed 123456789, reps 1 (+0 warmup), batch 256, threads 32, streams 2
+    cpu-port-terrain: 256 chunks x 1 reps: 915.4 chunks/s (sd 0.0, 0.00%), 1.092 ms/chunk
+    verify vs C:\MinecraftCuda\data\bench\verify_negative_terrain.u16: 25165824 blocks, 0 mismatches -> bit-exact
+[05:35:57] $ C:\MinecraftCuda\oracle\gradlew.bat --console=plain -q oracle -Pcmd=bench-terrain threads=1 region=8 reps=1 warmup=0 seed=123456789 x0=1874992 z0=1874992 tag=verify_border reset=1 dump=1
+    oracle: minecraft 26.3, java 25.0.4.1, bootstrap 2.7 s
+    terrain model: palette 37 states, 67 biomes, 2 ore veins -> %USERPROFILE%\AppData\Local\Temp\mccuda_terrain14629421343553033102.json
+    bench-terrain verify_border threads=1 rep 0: 0.972 s (biomes 0.085 s, fill+surface 0.887 s), 65.9 chunks/s
+    [05:36:01] [main/INFO]: [STDOUT]: bench-terrain: wrote C:\MinecraftCuda\data\bench\verify_border_terrain.u16
+    [05:36:01] [main/INFO]: [STDOUT]: bench-terrain: wrote C:\MinecraftCuda\data\bench\verify_border_t1.csv
+    oracle: bench-terrain done in 3.8 s
+[05:36:01] $ C:\MinecraftCuda\build\bench\mccuda_bench.exe --mode terrain-gpu --region 8 --x0 1874992 --z0 1874992 --seed 123456789 --reps 1 --warmup 0 --batch 256 --verify C:\MinecraftCuda\data\bench\verify_border_terrain.u16 --tag verify_border --out C:\MinecraftCuda\bench\results\final\verify_gpu.csv
+    device: NVIDIA GeForce RTX 5090 (sm_120, 170 SMs)
+    mode terrain-gpu, region 8x8 at (1874992,1874992), seed 123456789, reps 1 (+0 warmup), batch 256, threads 1, streams 2
+    terrain-gpu: seed setup 0.012 s (host tables + upload, once per seed, not in the timings)
+    cuda-terrain: 64 chunks x 1 reps: 10865.9 chunks/s (sd 0.0, 0.00%), 0.092 ms/chunk
+    verify vs C:\MinecraftCuda\data\bench\verify_border_terrain.u16: 6291456 blocks, 0 mismatches -> bit-exact
+[05:36:02] $ C:\MinecraftCuda\build\bench\mccuda_bench.exe --mode terrain-cpu --region 8 --x0 1874992 --z0 1874992 --seed 123456789 --reps 1 --warmup 0 --threads 32 --verify C:\MinecraftCuda\data\bench\verify_border_terrain.u16 --tag verify_border --out C:\MinecraftCuda\bench\results\final\verify_cpu.csv
+    device: NVIDIA GeForce RTX 5090 (sm_120, 170 SMs)
+    mode terrain-cpu, region 8x8 at (1874992,1874992), seed 123456789, reps 1 (+0 warmup), batch 256, threads 32, streams 2
+    cpu-port-terrain: 64 chunks x 1 reps: 740.9 chunks/s (sd 0.0, 0.00%), 1.350 ms/chunk
+    verify vs C:\MinecraftCuda\data\bench\verify_border_terrain.u16: 6291456 blocks, 0 mismatches -> bit-exact
+[05:36:02] $ C:\MinecraftCuda\oracle\gradlew.bat --console=plain -q oracle -Pcmd=bench-terrain threads=1 region=16 reps=5 warmup=2 seed=123456789 x0=0 z0=0 tag=vanilla_terrain_run0
+    oracle: minecraft 26.3, java 25.0.4.1, bootstrap 2.8 s
+    terrain model: palette 37 states, 67 biomes, 2 ore veins -> %USERPROFILE%\AppData\Local\Temp\mccuda_terrain3775231894077009331.json
+    bench-terrain vanilla_terrain_run0 threads=1 rep 0: 2.411 s (biomes 0.196 s, fill+surface 2.214 s), 106.2 chunks/s
+    bench-terrain vanilla_terrain_run0 threads=1 rep 1: 2.104 s (biomes 0.179 s, fill+surface 1.925 s), 121.7 chunks/s
+    bench-terrain vanilla_terrain_run0 threads=1 rep 2: 2.097 s (biomes 0.149 s, fill+surface 1.948 s), 122.1 chunks/s
+    bench-terrain vanilla_terrain_run0 threads=1 rep 3: 2.344 s (biomes 0.168 s, fill+surface 2.177 s), 109.2 chunks/s
+    bench-terrain vanilla_terrain_run0 threads=1 rep 4: 2.144 s (biomes 0.210 s, fill+surface 1.933 s), 119.4 chunks/s
+    [05:36:21] [main/INFO]: [STDOUT]: bench-terrain: wrote C:\MinecraftCuda\data\bench\vanilla_terrain_run0_t1.csv
+    oracle: bench-terrain done in 18.7 s
+[05:36:21] $ C:\MinecraftCuda\oracle\gradlew.bat --console=plain -q oracle -Pcmd=bench-terrain threads=1 region=16 reps=5 warmup=2 seed=123456789 x0=0 z0=0 tag=vanilla_terrain_run1
+    oracle: minecraft 26.3, java 25.0.4.1, bootstrap 2.8 s
+    terrain model: palette 37 states, 67 biomes, 2 ore veins -> %USERPROFILE%\AppData\Local\Temp\mccuda_terrain928147814773433613.json
+    bench-terrain vanilla_terrain_run1 threads=1 rep 0: 2.188 s (biomes 0.162 s, fill+surface 2.026 s), 117.0 chunks/s
+    bench-terrain vanilla_terrain_run1 threads=1 rep 1: 2.068 s (biomes 0.158 s, fill+surface 1.910 s), 123.8 chunks/s
+    bench-terrain vanilla_terrain_run1 threads=1 rep 2: 2.160 s (biomes 0.154 s, fill+surface 2.006 s), 118.5 chunks/s
+    bench-terrain vanilla_terrain_run1 threads=1 rep 3: 2.227 s (biomes 0.197 s, fill+surface 2.030 s), 115.0 chunks/s
+    bench-terrain vanilla_terrain_run1 threads=1 rep 4: 2.063 s (biomes 0.161 s, fill+surface 1.902 s), 124.1 chunks/s
+    [05:36:40] [main/INFO]: [STDOUT]: bench-terrain: wrote C:\MinecraftCuda\data\bench\vanilla_terrain_run1_t1.csv
+    oracle: bench-terrain done in 18.4 s
+[05:36:41] $ C:\MinecraftCuda\oracle\gradlew.bat --console=plain -q oracle -Pcmd=bench-terrain threads=1 region=16 reps=5 warmup=2 seed=123456789 x0=0 z0=0 tag=vanilla_terrain_run2
+    oracle: minecraft 26.3, java 25.0.4.1, bootstrap 2.8 s
+    terrain model: palette 37 states, 67 biomes, 2 ore veins -> %USERPROFILE%\AppData\Local\Temp\mccuda_terrain2002095395824856599.json
+    bench-terrain vanilla_terrain_run2 threads=1 rep 0: 2.234 s (biomes 0.211 s, fill+surface 2.023 s), 114.6 chunks/s
+    bench-terrain vanilla_terrain_run2 threads=1 rep 1: 2.107 s (biomes 0.150 s, fill+surface 1.958 s), 121.5 chunks/s
+    bench-terrain vanilla_terrain_run2 threads=1 rep 2: 2.217 s (biomes 0.164 s, fill+surface 2.053 s), 115.5 chunks/s
+    bench-terrain vanilla_terrain_run2 threads=1 rep 3: 2.111 s (biomes 0.147 s, fill+surface 1.964 s), 121.3 chunks/s
+    bench-terrain vanilla_terrain_run2 threads=1 rep 4: 2.060 s (biomes 0.164 s, fill+surface 1.895 s), 124.3 chunks/s
+    [05:37:00] [main/INFO]: [STDOUT]: bench-terrain: wrote C:\MinecraftCuda\data\bench\vanilla_terrain_run2_t1.csv
+    oracle: bench-terrain done in 18.6 s
+[05:37:00] $ C:\MinecraftCuda\oracle\gradlew.bat --console=plain -q oracle -Pcmd=bench-terrain threads=2 region=16 reps=5 warmup=2 seed=123456789 x0=0 z0=0 tag=vanilla_terrain_run0
+    oracle: minecraft 26.3, java 25.0.4.1, bootstrap 2.7 s
+    terrain model: palette 37 states, 67 biomes, 2 ore veins -> %USERPROFILE%\AppData\Local\Temp\mccuda_terrain4490375291969896127.json
+    bench-terrain vanilla_terrain_run0 threads=2 rep 0: 1.214 s (biomes 0.090 s, fill+surface 1.124 s), 210.9 chunks/s
+    bench-terrain vanilla_terrain_run0 threads=2 rep 1: 1.155 s (biomes 0.120 s, fill+surface 1.036 s), 221.6 chunks/s
+    bench-terrain vanilla_terrain_run0 threads=2 rep 2: 1.127 s (biomes 0.095 s, fill+surface 1.032 s), 227.2 chunks/s
+    bench-terrain vanilla_terrain_run0 threads=2 rep 3: 1.199 s (biomes 0.111 s, fill+surface 1.088 s), 213.5 chunks/s
+    bench-terrain vanilla_terrain_run0 threads=2 rep 4: 1.324 s (biomes 0.107 s, fill+surface 1.218 s), 193.3 chunks/s
+    [05:37:12] [main/INFO]: [STDOUT]: bench-terrain: wrote C:\MinecraftCuda\data\bench\vanilla_terrain_run0_t2.csv
+    oracle: bench-terrain done in 11.6 s
+[05:37:13] $ C:\MinecraftCuda\oracle\gradlew.bat --console=plain -q oracle -Pcmd=bench-terrain threads=4 region=16 reps=5 warmup=2 seed=123456789 x0=0 z0=0 tag=vanilla_terrain_run0
+    oracle: minecraft 26.3, java 25.0.4.1, bootstrap 2.7 s
+    terrain model: palette 37 states, 67 biomes, 2 ore veins -> %USERPROFILE%\AppData\Local\Temp\mccuda_terrain2601887823554956281.json
+    bench-terrain vanilla_terrain_run0 threads=4 rep 0: 0.633 s (biomes 0.048 s, fill+surface 0.585 s), 404.5 chunks/s
+    bench-terrain vanilla_terrain_run0 threads=4 rep 1: 0.599 s (biomes 0.043 s, fill+surface 0.556 s), 427.3 chunks/s
+    bench-terrain vanilla_terrain_run0 threads=4 rep 2: 0.647 s (biomes 0.055 s, fill+surface 0.592 s), 395.6 chunks/s
+    bench-terrain vanilla_terrain_run0 threads=4 rep 3: 0.621 s (biomes 0.044 s, fill+surface 0.577 s), 412.2 chunks/s
+    bench-terrain vanilla_terrain_run0 threads=4 rep 4: 0.618 s (biomes 0.054 s, fill+surface 0.564 s), 414.1 chunks/s
+    [05:37:21] [main/INFO]: [STDOUT]: bench-terrain: wrote C:\MinecraftCuda\data\bench\vanilla_terrain_run0_t4.csv
+    oracle: bench-terrain done in 7.7 s
+[05:37:21] $ C:\MinecraftCuda\oracle\gradlew.bat --console=plain -q oracle -Pcmd=bench-terrain threads=8 region=32 reps=5 warmup=2 seed=123456789 x0=0 z0=0 tag=vanilla_terrain_run0
+    oracle: minecraft 26.3, java 25.0.4.1, bootstrap 2.6 s
+    terrain model: palette 37 states, 67 biomes, 2 ore veins -> %USERPROFILE%\AppData\Local\Temp\mccuda_terrain2080139960487335274.json
+    bench-terrain vanilla_terrain_run0 threads=8 rep 0: 1.373 s (biomes 0.101 s, fill+surface 1.272 s), 745.9 chunks/s
+    bench-terrain vanilla_terrain_run0 threads=8 rep 1: 1.408 s (biomes 0.103 s, fill+surface 1.305 s), 727.3 chunks/s
+    bench-terrain vanilla_terrain_run0 threads=8 rep 2: 1.402 s (biomes 0.109 s, fill+surface 1.293 s), 730.4 chunks/s
+    bench-terrain vanilla_terrain_run0 threads=8 rep 3: 1.431 s (biomes 0.111 s, fill+surface 1.320 s), 715.6 chunks/s
+    bench-terrain vanilla_terrain_run0 threads=8 rep 4: 1.418 s (biomes 0.105 s, fill+surface 1.313 s), 721.9 chunks/s
+    [05:37:35] [main/INFO]: [STDOUT]: bench-terrain: wrote C:\MinecraftCuda\data\bench\vanilla_terrain_run0_t8.csv
+    oracle: bench-terrain done in 13.1 s
+[05:37:35] $ C:\MinecraftCuda\oracle\gradlew.bat --console=plain -q oracle -Pcmd=bench-terrain threads=16 region=32 reps=5 warmup=2 seed=123456789 x0=0 z0=0 tag=vanilla_terrain_run0
+    oracle: minecraft 26.3, java 25.0.4.1, bootstrap 2.6 s
+    terrain model: palette 37 states, 67 biomes, 2 ore veins -> %USERPROFILE%\AppData\Local\Temp\mccuda_terrain7389948177439531933.json
+    bench-terrain vanilla_terrain_run0 threads=16 rep 0: 0.732 s (biomes 0.061 s, fill+surface 0.671 s), 1399.2 chunks/s
+    bench-terrain vanilla_terrain_run0 threads=16 rep 1: 0.742 s (biomes 0.063 s, fill+surface 0.678 s), 1381.0 chunks/s
+    bench-terrain vanilla_terrain_run0 threads=16 rep 2: 0.731 s (biomes 0.060 s, fill+surface 0.670 s), 1401.7 chunks/s
+    bench-terrain vanilla_terrain_run0 threads=16 rep 3: 0.715 s (biomes 0.059 s, fill+surface 0.657 s), 1431.3 chunks/s
+    bench-terrain vanilla_terrain_run0 threads=16 rep 4: 0.733 s (biomes 0.058 s, fill+surface 0.675 s), 1397.3 chunks/s
+    [05:37:45] [main/INFO]: [STDOUT]: bench-terrain: wrote C:\MinecraftCuda\data\bench\vanilla_terrain_run0_t16.csv
+    oracle: bench-terrain done in 8.9 s
+[05:37:45] $ C:\MinecraftCuda\oracle\gradlew.bat --console=plain -q oracle -Pcmd=bench-terrain threads=32 region=32 reps=5 warmup=2 seed=123456789 x0=0 z0=0 tag=vanilla_terrain_run0
+    oracle: minecraft 26.3, java 25.0.4.1, bootstrap 2.6 s
+    terrain model: palette 37 states, 67 biomes, 2 ore veins -> %USERPROFILE%\AppData\Local\Temp\mccuda_terrain8564507152850029011.json
+    bench-terrain vanilla_terrain_run0 threads=32 rep 0: 0.504 s (biomes 0.066 s, fill+surface 0.439 s), 2030.5 chunks/s
+    bench-terrain vanilla_terrain_run0 threads=32 rep 1: 0.490 s (biomes 0.041 s, fill+surface 0.448 s), 2090.9 chunks/s
+    bench-terrain vanilla_terrain_run0 threads=32 rep 2: 0.536 s (biomes 0.042 s, fill+surface 0.494 s), 1909.7 chunks/s
+    bench-terrain vanilla_terrain_run0 threads=32 rep 3: 0.477 s (biomes 0.046 s, fill+surface 0.430 s), 2148.8 chunks/s
+    bench-terrain vanilla_terrain_run0 threads=32 rep 4: 0.536 s (biomes 0.042 s, fill+surface 0.494 s), 1910.9 chunks/s
+    [05:37:53] [main/INFO]: [STDOUT]: bench-terrain: wrote C:\MinecraftCuda\data\bench\vanilla_terrain_run0_t32.csv
+    oracle: bench-terrain done in 7.3 s
+[05:37:54] $ C:\MinecraftCuda\oracle\gradlew.bat --console=plain -q oracle -Pcmd=bench-terrain threads=32 region=32 reps=5 warmup=2 seed=123456789 x0=0 z0=0 tag=vanilla_terrain_run1
+    oracle: minecraft 26.3, java 25.0.4.1, bootstrap 2.6 s
+    terrain model: palette 37 states, 67 biomes, 2 ore veins -> %USERPROFILE%\AppData\Local\Temp\mccuda_terrain2940510710315886617.json
+    bench-terrain vanilla_terrain_run1 threads=32 rep 0: 0.495 s (biomes 0.066 s, fill+surface 0.430 s), 2067.1 chunks/s
+    bench-terrain vanilla_terrain_run1 threads=32 rep 1: 0.495 s (biomes 0.042 s, fill+surface 0.453 s), 2070.6 chunks/s
+    bench-terrain vanilla_terrain_run1 threads=32 rep 2: 0.516 s (biomes 0.042 s, fill+surface 0.474 s), 1983.6 chunks/s
+    bench-terrain vanilla_terrain_run1 threads=32 rep 3: 0.467 s (biomes 0.042 s, fill+surface 0.424 s), 2194.7 chunks/s
+    bench-terrain vanilla_terrain_run1 threads=32 rep 4: 0.513 s (biomes 0.041 s, fill+surface 0.471 s), 1997.9 chunks/s
+    [05:38:02] [main/INFO]: [STDOUT]: bench-terrain: wrote C:\MinecraftCuda\data\bench\vanilla_terrain_run1_t32.csv
+    oracle: bench-terrain done in 7.3 s
+[05:38:02] $ C:\MinecraftCuda\oracle\gradlew.bat --console=plain -q oracle -Pcmd=bench-terrain threads=32 region=32 reps=5 warmup=2 seed=123456789 x0=0 z0=0 tag=vanilla_terrain_run2
+    oracle: minecraft 26.3, java 25.0.4.1, bootstrap 2.6 s
+    terrain model: palette 37 states, 67 biomes, 2 ore veins -> %USERPROFILE%\AppData\Local\Temp\mccuda_terrain10304929085841319622.json
+    bench-terrain vanilla_terrain_run2 threads=32 rep 0: 0.515 s (biomes 0.042 s, fill+surface 0.472 s), 1989.4 chunks/s
+    bench-terrain vanilla_terrain_run2 threads=32 rep 1: 0.458 s (biomes 0.042 s, fill+surface 0.417 s), 2234.8 chunks/s
+    bench-terrain vanilla_terrain_run2 threads=32 rep 2: 0.508 s (biomes 0.067 s, fill+surface 0.441 s), 2016.7 chunks/s
+    bench-terrain vanilla_terrain_run2 threads=32 rep 3: 0.475 s (biomes 0.042 s, fill+surface 0.433 s), 2157.8 chunks/s
+    bench-terrain vanilla_terrain_run2 threads=32 rep 4: 0.501 s (biomes 0.064 s, fill+surface 0.436 s), 2045.1 chunks/s
+    [05:38:10] [main/INFO]: [STDOUT]: bench-terrain: wrote C:\MinecraftCuda\data\bench\vanilla_terrain_run2_t32.csv
+    oracle: bench-terrain done in 7.3 s
+[05:38:10] $ C:\MinecraftCuda\oracle\gradlew.bat --console=plain -q oracle -Pcmd=bench-vanilla threads=1 region=16 reps=5 warmup=2 seed=123456789 x0=0 z0=0 tag=vanilla_core
+    oracle: minecraft 26.3, java 25.0.4.1, bootstrap 2.6 s
+    bench-vanilla vanilla_core threads=1 rep 0: 0.556 s, 460.5 chunks/s
+    bench-vanilla vanilla_core threads=1 rep 1: 0.563 s, 455.1 chunks/s
+    bench-vanilla vanilla_core threads=1 rep 2: 0.560 s, 456.8 chunks/s
+    bench-vanilla vanilla_core threads=1 rep 3: 0.563 s, 455.0 chunks/s
+    bench-vanilla vanilla_core threads=1 rep 4: 0.548 s, 467.2 chunks/s
+    [05:38:18] [main/INFO]: [STDOUT]: bench-vanilla: wrote C:\MinecraftCuda\data\bench\vanilla_core_t1.csv
+    oracle: bench-vanilla done in 6.8 s
+[05:38:18] $ C:\MinecraftCuda\oracle\gradlew.bat --console=plain -q oracle -Pcmd=bench-vanilla threads=32 region=32 reps=5 warmup=2 seed=123456789 x0=0 z0=0 tag=vanilla_core
+    oracle: minecraft 26.3, java 25.0.4.1, bootstrap 2.8 s
+    bench-vanilla vanilla_core threads=32 rep 0: 0.114 s, 8945.6 chunks/s
+    bench-vanilla vanilla_core threads=32 rep 1: 0.115 s, 8937.4 chunks/s
+    bench-vanilla vanilla_core threads=32 rep 2: 0.124 s, 8252.4 chunks/s
+    bench-vanilla vanilla_core threads=32 rep 3: 0.122 s, 8387.8 chunks/s
+    bench-vanilla vanilla_core threads=32 rep 4: 0.122 s, 8408.4 chunks/s
+    [05:38:23] [main/INFO]: [STDOUT]: bench-vanilla: wrote C:\MinecraftCuda\data\bench\vanilla_core_t32.csv
+    oracle: bench-vanilla done in 4.3 s
+[05:38:23] $ C:\MinecraftCuda\build\bench\mccuda_bench.exe --mode terrain-cpu --region 16 --seed 123456789 --reps 5 --warmup 1 --threads 1 --tag run0 --out C:\MinecraftCuda\bench\results\final\cpu_terrain.csv
+    device: NVIDIA GeForce RTX 5090 (sm_120, 170 SMs)
+    mode terrain-cpu, region 16x16 at (0,0), seed 123456789, reps 5 (+1 warmup), batch 256, threads 1, streams 2
+    cpu-port-terrain: 256 chunks x 5 reps: 66.3 chunks/s (sd 2.1, 3.17%), 15.084 ms/chunk
+[05:38:46] $ C:\MinecraftCuda\build\bench\mccuda_bench.exe --mode terrain-cpu --region 16 --seed 123456789 --reps 5 --warmup 1 --threads 1 --tag run1 --out C:\MinecraftCuda\bench\results\final\cpu_terrain.csv
+    device: NVIDIA GeForce RTX 5090 (sm_120, 170 SMs)
+    mode terrain-cpu, region 16x16 at (0,0), seed 123456789, reps 5 (+1 warmup), batch 256, threads 1, streams 2
+    cpu-port-terrain: 256 chunks x 5 reps: 67.5 chunks/s (sd 1.6, 2.35%), 14.820 ms/chunk
+[05:39:09] $ C:\MinecraftCuda\build\bench\mccuda_bench.exe --mode terrain-cpu --region 16 --seed 123456789 --reps 5 --warmup 1 --threads 1 --tag run2 --out C:\MinecraftCuda\bench\results\final\cpu_terrain.csv
+    device: NVIDIA GeForce RTX 5090 (sm_120, 170 SMs)
+    mode terrain-cpu, region 16x16 at (0,0), seed 123456789, reps 5 (+1 warmup), batch 256, threads 1, streams 2
+    cpu-port-terrain: 256 chunks x 5 reps: 64.1 chunks/s (sd 3.2, 5.02%), 15.595 ms/chunk
+[05:39:32] $ C:\MinecraftCuda\build\bench\mccuda_bench.exe --mode core-cpu --region 16 --seed 123456789 --reps 5 --warmup 1 --threads 1 --out C:\MinecraftCuda\bench\results\final\cpu_core.csv
+    device: NVIDIA GeForce RTX 5090 (sm_120, 170 SMs)
+    mode core-cpu, region 16x16 at (0,0), seed 123456789, reps 5 (+1 warmup), batch 256, threads 1, streams 2
+    cpu-port-core: 256 chunks x 5 reps: 208.5 chunks/s (sd 15.4, 7.38%), 4.796 ms/chunk
+[05:39:40] $ C:\MinecraftCuda\build\bench\mccuda_bench.exe --mode terrain-cpu --region 32 --seed 123456789 --reps 5 --warmup 1 --threads 32 --tag run0 --out C:\MinecraftCuda\bench\results\final\cpu_terrain.csv
+    device: NVIDIA GeForce RTX 5090 (sm_120, 170 SMs)
+    mode terrain-cpu, region 32x32 at (0,0), seed 123456789, reps 5 (+1 warmup), batch 256, threads 32, streams 2
+    cpu-port-terrain: 1024 chunks x 5 reps: 1172.6 chunks/s (sd 13.9, 1.19%), 0.853 ms/chunk
+[05:39:45] $ C:\MinecraftCuda\build\bench\mccuda_bench.exe --mode terrain-cpu --region 32 --seed 123456789 --reps 5 --warmup 1 --threads 32 --tag run1 --out C:\MinecraftCuda\bench\results\final\cpu_terrain.csv
+    device: NVIDIA GeForce RTX 5090 (sm_120, 170 SMs)
+    mode terrain-cpu, region 32x32 at (0,0), seed 123456789, reps 5 (+1 warmup), batch 256, threads 32, streams 2
+    cpu-port-terrain: 1024 chunks x 5 reps: 1159.5 chunks/s (sd 12.8, 1.10%), 0.862 ms/chunk
+[05:39:51] $ C:\MinecraftCuda\build\bench\mccuda_bench.exe --mode terrain-cpu --region 32 --seed 123456789 --reps 5 --warmup 1 --threads 32 --tag run2 --out C:\MinecraftCuda\bench\results\final\cpu_terrain.csv
+    device: NVIDIA GeForce RTX 5090 (sm_120, 170 SMs)
+    mode terrain-cpu, region 32x32 at (0,0), seed 123456789, reps 5 (+1 warmup), batch 256, threads 32, streams 2
+    cpu-port-terrain: 1024 chunks x 5 reps: 1155.2 chunks/s (sd 7.1, 0.62%), 0.866 ms/chunk
+[05:39:56] $ C:\MinecraftCuda\build\bench\mccuda_bench.exe --mode core-cpu --region 32 --seed 123456789 --reps 5 --warmup 1 --threads 32 --out C:\MinecraftCuda\bench\results\final\cpu_core.csv
+    device: NVIDIA GeForce RTX 5090 (sm_120, 170 SMs)
+    mode core-cpu, region 32x32 at (0,0), seed 123456789, reps 5 (+1 warmup), batch 256, threads 32, streams 2
+    cpu-port-core: 1024 chunks x 5 reps: 3966.9 chunks/s (sd 184.6, 4.65%), 0.252 ms/chunk
+[05:39:58] gpu state before_gpu: NVIDIA GeForce RTX 5090, 591.86, 375 MHz, 3090 MHz, 810 MHz, 32, 30.21 W, 600.00 W, P5
+[05:39:58] $ C:\MinecraftCuda\build\bench\mccuda_bench.exe --mode terrain-gpu --region 128 --seed 123456789 --reps 5 --warmup 2 --batch 2048 --streams 2 --tag run0 --out C:\MinecraftCuda\bench\results\final\gpu_headline.csv
+    device: NVIDIA GeForce RTX 5090 (sm_120, 170 SMs)
+    mode terrain-gpu, region 128x128 at (0,0), seed 123456789, reps 5 (+2 warmup), batch 2048, threads 1, streams 2
+    terrain-gpu: seed setup 0.013 s (host tables + upload, once per seed, not in the timings)
+    cuda-terrain: 16384 chunks x 5 reps: 101908.7 chunks/s (sd 517.0, 0.51%), 0.010 ms/chunk
+[05:40:00] $ C:\MinecraftCuda\build\bench\mccuda_bench.exe --mode terrain-gpu --region 128 --seed 123456789 --reps 5 --warmup 2 --batch 2048 --streams 2 --tag run1 --out C:\MinecraftCuda\bench\results\final\gpu_headline.csv
+    device: NVIDIA GeForce RTX 5090 (sm_120, 170 SMs)
+    mode terrain-gpu, region 128x128 at (0,0), seed 123456789, reps 5 (+2 warmup), batch 2048, threads 1, streams 2
+    terrain-gpu: seed setup 0.012 s (host tables + upload, once per seed, not in the timings)
+    cuda-terrain: 16384 chunks x 5 reps: 101132.0 chunks/s (sd 399.7, 0.40%), 0.010 ms/chunk
+[05:40:01] $ C:\MinecraftCuda\build\bench\mccuda_bench.exe --mode terrain-gpu --region 128 --seed 123456789 --reps 5 --warmup 2 --batch 2048 --streams 2 --tag run2 --out C:\MinecraftCuda\bench\results\final\gpu_headline.csv
+    device: NVIDIA GeForce RTX 5090 (sm_120, 170 SMs)
+    mode terrain-gpu, region 128x128 at (0,0), seed 123456789, reps 5 (+2 warmup), batch 2048, threads 1, streams 2
+    terrain-gpu: seed setup 0.013 s (host tables + upload, once per seed, not in the timings)
+    cuda-terrain: 16384 chunks x 5 reps: 101015.6 chunks/s (sd 783.4, 0.78%), 0.010 ms/chunk
+[05:40:03] $ C:\MinecraftCuda\build\bench\mccuda_bench.exe --mode terrain-gpu --region 128 --seed 123456789 --reps 5 --warmup 2 --batch 64 --streams 1 --out C:\MinecraftCuda\bench\results\final\gpu_batch_sweep.csv
+    device: NVIDIA GeForce RTX 5090 (sm_120, 170 SMs)
+    mode terrain-gpu, region 128x128 at (0,0), seed 123456789, reps 5 (+2 warmup), batch 64, threads 1, streams 1
+    terrain-gpu: seed setup 0.013 s (host tables + upload, once per seed, not in the timings)
+    cuda-terrain: 16384 chunks x 5 reps: 18011.8 chunks/s (sd 69.8, 0.39%), 0.056 ms/chunk
+[05:40:10] $ C:\MinecraftCuda\build\bench\mccuda_bench.exe --mode terrain-gpu --region 128 --seed 123456789 --reps 5 --warmup 2 --batch 64 --streams 2 --out C:\MinecraftCuda\bench\results\final\gpu_batch_sweep.csv
+    device: NVIDIA GeForce RTX 5090 (sm_120, 170 SMs)
+    mode terrain-gpu, region 128x128 at (0,0), seed 123456789, reps 5 (+2 warmup), batch 64, threads 1, streams 2
+    terrain-gpu: seed setup 0.011 s (host tables + upload, once per seed, not in the timings)
+    cuda-terrain: 16384 chunks x 5 reps: 31681.9 chunks/s (sd 163.4, 0.52%), 0.032 ms/chunk
+[05:40:14] $ C:\MinecraftCuda\build\bench\mccuda_bench.exe --mode terrain-gpu --region 128 --seed 123456789 --reps 5 --warmup 2 --batch 256 --streams 1 --out C:\MinecraftCuda\bench\results\final\gpu_batch_sweep.csv
+    device: NVIDIA GeForce RTX 5090 (sm_120, 170 SMs)
+    mode terrain-gpu, region 128x128 at (0,0), seed 123456789, reps 5 (+2 warmup), batch 256, threads 1, streams 1
+    terrain-gpu: seed setup 0.011 s (host tables + upload, once per seed, not in the timings)
+    cuda-terrain: 16384 chunks x 5 reps: 43512.1 chunks/s (sd 162.3, 0.37%), 0.023 ms/chunk
+[05:40:17] $ C:\MinecraftCuda\build\bench\mccuda_bench.exe --mode terrain-gpu --region 128 --seed 123456789 --reps 5 --warmup 2 --batch 256 --streams 2 --out C:\MinecraftCuda\bench\results\final\gpu_batch_sweep.csv
+    device: NVIDIA GeForce RTX 5090 (sm_120, 170 SMs)
+    mode terrain-gpu, region 128x128 at (0,0), seed 123456789, reps 5 (+2 warmup), batch 256, threads 1, streams 2
+    terrain-gpu: seed setup 0.013 s (host tables + upload, once per seed, not in the timings)
+    cuda-terrain: 16384 chunks x 5 reps: 68610.2 chunks/s (sd 243.9, 0.36%), 0.015 ms/chunk
+[05:40:19] $ C:\MinecraftCuda\build\bench\mccuda_bench.exe --mode terrain-gpu --region 128 --seed 123456789 --reps 5 --warmup 2 --batch 1024 --streams 1 --out C:\MinecraftCuda\bench\results\final\gpu_batch_sweep.csv
+    device: NVIDIA GeForce RTX 5090 (sm_120, 170 SMs)
+    mode terrain-gpu, region 128x128 at (0,0), seed 123456789, reps 5 (+2 warmup), batch 1024, threads 1, streams 1
+    terrain-gpu: seed setup 0.013 s (host tables + upload, once per seed, not in the timings)
+    cuda-terrain: 16384 chunks x 5 reps: 66166.7 chunks/s (sd 364.3, 0.55%), 0.015 ms/chunk
+[05:40:21] $ C:\MinecraftCuda\build\bench\mccuda_bench.exe --mode terrain-gpu --region 128 --seed 123456789 --reps 5 --warmup 2 --batch 1024 --streams 2 --out C:\MinecraftCuda\bench\results\final\gpu_batch_sweep.csv
+    device: NVIDIA GeForce RTX 5090 (sm_120, 170 SMs)
+    mode terrain-gpu, region 128x128 at (0,0), seed 123456789, reps 5 (+2 warmup), batch 1024, threads 1, streams 2
+    terrain-gpu: seed setup 0.012 s (host tables + upload, once per seed, not in the timings)
+    cuda-terrain: 16384 chunks x 5 reps: 94258.7 chunks/s (sd 527.6, 0.56%), 0.011 ms/chunk
+[05:40:23] $ C:\MinecraftCuda\build\bench\mccuda_bench.exe --mode terrain-gpu --region 128 --seed 123456789 --reps 5 --warmup 2 --batch 2048 --streams 1 --out C:\MinecraftCuda\bench\results\final\gpu_batch_sweep.csv
+    device: NVIDIA GeForce RTX 5090 (sm_120, 170 SMs)
+    mode terrain-gpu, region 128x128 at (0,0), seed 123456789, reps 5 (+2 warmup), batch 2048, threads 1, streams 1
+    terrain-gpu: seed setup 0.012 s (host tables + upload, once per seed, not in the timings)
+    cuda-terrain: 16384 chunks x 5 reps: 73506.9 chunks/s (sd 264.0, 0.36%), 0.014 ms/chunk
+[05:40:25] $ C:\MinecraftCuda\build\bench\mccuda_bench.exe --mode terrain-gpu --region 128 --seed 123456789 --reps 5 --warmup 2 --batch 2048 --streams 2 --out C:\MinecraftCuda\bench\results\final\gpu_batch_sweep.csv
+    device: NVIDIA GeForce RTX 5090 (sm_120, 170 SMs)
+    mode terrain-gpu, region 128x128 at (0,0), seed 123456789, reps 5 (+2 warmup), batch 2048, threads 1, streams 2
+    terrain-gpu: seed setup 0.012 s (host tables + upload, once per seed, not in the timings)
+    cuda-terrain: 16384 chunks x 5 reps: 101333.9 chunks/s (sd 500.0, 0.49%), 0.010 ms/chunk
+[05:40:26] $ C:\MinecraftCuda\build\bench\mccuda_bench.exe --mode terrain-gpu --region 128 --seed 123456789 --reps 5 --warmup 2 --batch 4096 --streams 1 --out C:\MinecraftCuda\bench\results\final\gpu_batch_sweep.csv
+    device: NVIDIA GeForce RTX 5090 (sm_120, 170 SMs)
+    mode terrain-gpu, region 128x128 at (0,0), seed 123456789, reps 5 (+2 warmup), batch 4096, threads 1, streams 1
+    terrain-gpu: seed setup 0.012 s (host tables + upload, once per seed, not in the timings)
+    cuda-terrain: 16384 chunks x 5 reps: 78726.5 chunks/s (sd 656.8, 0.83%), 0.013 ms/chunk
+[05:40:28] $ C:\MinecraftCuda\build\bench\mccuda_bench.exe --mode terrain-gpu --region 128 --seed 123456789 --reps 5 --warmup 2 --batch 4096 --streams 2 --out C:\MinecraftCuda\bench\results\final\gpu_batch_sweep.csv
+    device: NVIDIA GeForce RTX 5090 (sm_120, 170 SMs)
+    mode terrain-gpu, region 128x128 at (0,0), seed 123456789, reps 5 (+2 warmup), batch 4096, threads 1, streams 2
+    terrain-gpu: seed setup 0.013 s (host tables + upload, once per seed, not in the timings)
+    cuda-terrain: 16384 chunks x 5 reps: 101536.3 chunks/s (sd 2486.2, 2.45%), 0.010 ms/chunk
+[05:40:30] $ C:\MinecraftCuda\build\bench\mccuda_bench.exe --mode terrain-gpu --region 1 --seed 123456789 --reps 20 --warmup 3 --batch 1 --streams 1 --out C:\MinecraftCuda\bench\results\final\gpu_latency.csv
+    device: NVIDIA GeForce RTX 5090 (sm_120, 170 SMs)
+    mode terrain-gpu, region 1x1 at (0,0), seed 123456789, reps 20 (+3 warmup), batch 1, threads 1, streams 1
+    terrain-gpu: seed setup 0.012 s (host tables + upload, once per seed, not in the timings)
+    cuda-terrain: 1 chunks x 20 reps: 376.3 chunks/s (sd 12.3, 3.27%), 2.658 ms/chunk
+[05:40:30] $ C:\MinecraftCuda\build\bench\mccuda_bench.exe --mode terrain-gpu --region 2 --seed 123456789 --reps 20 --warmup 3 --batch 4 --streams 1 --out C:\MinecraftCuda\bench\results\final\gpu_latency.csv
+    device: NVIDIA GeForce RTX 5090 (sm_120, 170 SMs)
+    mode terrain-gpu, region 2x2 at (0,0), seed 123456789, reps 20 (+3 warmup), batch 4, threads 1, streams 1
+    terrain-gpu: seed setup 0.012 s (host tables + upload, once per seed, not in the timings)
+    cuda-terrain: 4 chunks x 20 reps: 1460.8 chunks/s (sd 55.1, 3.77%), 0.685 ms/chunk
+[05:40:30] $ C:\MinecraftCuda\build\bench\mccuda_bench.exe --mode terrain-gpu --region 3 --seed 123456789 --reps 20 --warmup 3 --batch 9 --streams 1 --out C:\MinecraftCuda\bench\results\final\gpu_latency.csv
+    device: NVIDIA GeForce RTX 5090 (sm_120, 170 SMs)
+    mode terrain-gpu, region 3x3 at (0,0), seed 123456789, reps 20 (+3 warmup), batch 9, threads 1, streams 1
+    terrain-gpu: seed setup 0.013 s (host tables + upload, once per seed, not in the timings)
+    cuda-terrain: 9 chunks x 20 reps: 3135.8 chunks/s (sd 89.9, 2.87%), 0.319 ms/chunk
+[05:40:31] $ C:\MinecraftCuda\build\bench\mccuda_bench.exe --mode terrain-gpu --region 4 --seed 123456789 --reps 20 --warmup 3 --batch 16 --streams 1 --out C:\MinecraftCuda\bench\results\final\gpu_latency.csv
+    device: NVIDIA GeForce RTX 5090 (sm_120, 170 SMs)
+    mode terrain-gpu, region 4x4 at (0,0), seed 123456789, reps 20 (+3 warmup), batch 16, threads 1, streams 1
+    terrain-gpu: seed setup 0.012 s (host tables + upload, once per seed, not in the timings)
+    cuda-terrain: 16 chunks x 20 reps: 5361.4 chunks/s (sd 137.5, 2.57%), 0.187 ms/chunk
+[05:40:31] $ C:\MinecraftCuda\build\bench\mccuda_bench.exe --mode terrain-gpu --region 8 --seed 123456789 --reps 20 --warmup 3 --batch 64 --streams 1 --out C:\MinecraftCuda\bench\results\final\gpu_latency.csv
+    device: NVIDIA GeForce RTX 5090 (sm_120, 170 SMs)
+    mode terrain-gpu, region 8x8 at (0,0), seed 123456789, reps 20 (+3 warmup), batch 64, threads 1, streams 1
+    terrain-gpu: seed setup 0.013 s (host tables + upload, once per seed, not in the timings)
+    cuda-terrain: 64 chunks x 20 reps: 18516.2 chunks/s (sd 577.4, 3.12%), 0.054 ms/chunk
+[05:40:31] $ C:\MinecraftCuda\build\bench\mccuda_bench.exe --mode terrain-gpu --region 16 --seed 123456789 --reps 20 --warmup 3 --batch 256 --streams 1 --out C:\MinecraftCuda\bench\results\final\gpu_latency.csv
+    device: NVIDIA GeForce RTX 5090 (sm_120, 170 SMs)
+    mode terrain-gpu, region 16x16 at (0,0), seed 123456789, reps 20 (+3 warmup), batch 256, threads 1, streams 1
+    terrain-gpu: seed setup 0.012 s (host tables + upload, once per seed, not in the timings)
+    cuda-terrain: 256 chunks x 20 reps: 45404.5 chunks/s (sd 554.0, 1.22%), 0.022 ms/chunk
+[05:40:31] $ C:\MinecraftCuda\build\bench\mccuda_bench.exe --mode terrain-gpu --region 128 --seed 123456789 --reps 5 --warmup 2 --batch 2048 --streams 2 --pageable --tag pageable --out C:\MinecraftCuda\bench\results\final\gpu_pageable.csv
+    device: NVIDIA GeForce RTX 5090 (sm_120, 170 SMs)
+    mode terrain-gpu, region 128x128 at (0,0), seed 123456789, reps 5 (+2 warmup), batch 2048, threads 1, streams 2
+    terrain-gpu: seed setup 0.012 s (host tables + upload, once per seed, not in the timings)
+    cuda-terrain: 16384 chunks x 5 reps: 93730.4 chunks/s (sd 1550.6, 1.65%), 0.011 ms/chunk
+[05:40:33] $ C:\MinecraftCuda\build\bench\mccuda_bench.exe --mode core-gpu --region 64 --seed 123456789 --reps 5 --warmup 2 --batch 1024 --version 0 --out C:\MinecraftCuda\bench\results\final\gpu_core.csv
+    device: NVIDIA GeForce RTX 5090 (sm_120, 170 SMs)
+    mode core-gpu, region 64x64 at (0,0), seed 123456789, reps 5 (+2 warmup), batch 1024, threads 1, streams 2
+    cuda-core-v0: 4096 chunks x 5 reps: 40126.3 chunks/s (sd 183.9, 0.46%), 0.025 ms/chunk
+[05:40:34] gpu state end: NVIDIA GeForce RTX 5090, 591.86, 2910 MHz, 3090 MHz, 13801 MHz, 44, 265.28 W, 600.00 W, P1
+[05:40:34] run_all.py done

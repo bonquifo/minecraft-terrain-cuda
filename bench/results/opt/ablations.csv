@@ -1,0 +1,4 @@
+experiment,code_state,kernel,baseline_ms,ablated_ms,note
+E1 ore veins disabled,v2,k_surface2,39.956,39.454,"throwaway build; ore_vein() returns -1; nsys cuda_gpu_kern_sum average per launch, region 64x64 batch 4096"
+E2 biome zoom bypassed,v2,k_surface2,39.956,8.231,"throwaway build; biome_at() without BiomeManager zoom (same control flow); nsys average per launch"
+E3 R-tree search skipped,v7,k_biome_quarts,11.900,0.414,"throwaway build; climate evaluated, tree search replaced by a constant; nsys average per launch"

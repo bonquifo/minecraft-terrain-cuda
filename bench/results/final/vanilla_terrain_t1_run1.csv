@@ -1,0 +1,6 @@
+impl,threads,region,seed,x0,z0,rep,seconds,chunks_per_s,biome_seconds,terrain_seconds
+vanilla_terrain_run1,1,16,123456789,0,0,0,2.187660,117.020,0.161730,2.025930
+vanilla_terrain_run1,1,16,123456789,0,0,1,2.068171,123.781,0.158199,1.909971
+vanilla_terrain_run1,1,16,123456789,0,0,2,2.160106,118.513,0.154072,2.006034
+vanilla_terrain_run1,1,16,123456789,0,0,3,2.226700,114.968,0.196844,2.029856
+vanilla_terrain_run1,1,16,123456789,0,0,4,2.063468,124.063,0.161127,1.902341

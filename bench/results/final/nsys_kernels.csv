@@ -1,0 +1,24 @@
+kernel,avg_ms,pct,launches_per_batch,what
+k_blocks,10.2182,24.86,1.0,"interpolation, final density and aquifer substance per block"
+k_corners,9.9032,24.09,1.0,density and ore channels at the 4x8x4 cell corners
+k_biome_quarts,8.0428,19.56,1.0,climate at every quart + bounded R-tree search (first minimal leaf)
+k_surface2,7.9905,19.44,1.0,material rules (incl. ore veins) and frozen-ocean extension
+k_biome_chain,1.5532,3.78,1.0,R-tree last-result rule (one warp per biome chunk)
+k_aquifer_cells,0.9982,2.43,1.0,aquifer cell locations and fluid status
+k_fts_unique,0.5618,1.37,1.0,find_top_surface per distinct surface-level cell
+k_heights,0.4180,1.02,1.0,initial heightmap
+k_columns,0.3240,0.79,1.0,y-independent density inputs per distinct corner column
+k_biome_ties,0.3001,0.73,1.0,flags where the previous leaf ties the minimum
+k_axis_xz,0.2741,0.67,1.0,x/z noise coordinate records per distinct column
+k_biome_columns,0.2178,0.53,1.0,"climate inputs that do not depend on y, per quart column"
+DeviceRadixSort,0.1981,0.48,20.0,dedupe: CUB radix sort
+k_surface1,0.0372,0.09,1.0,"eroded-badlands extension, frozen-ocean heights"
+k_scatter,0.0254,0.06,2.0,dedupe: unique keys and map
+DeviceScan,0.0106,0.03,4.0,dedupe: CUB scan
+k_grid_scatter,0.0103,0.03,1.0,surface levels back to each chunk
+k_grid_keys,0.0097,0.02,1.0,surface-level cell keys for the dedupe
+k_heads,0.0057,0.01,2.0,dedupe: run heads
+k_iota,0.0052,0.01,2.0,dedupe: indices
+k_aquifer_skip,0.0032,0.01,1.0,aquifer skip height per chunk
+k_col_keys,0.0012,0.00,1.0,corner-column keys for the dedupe
+k_zoom_squares,0.0004,0.00,0.2,

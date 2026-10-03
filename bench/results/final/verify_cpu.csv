@@ -1,0 +1,4 @@
+impl,tag,mode,threads,batch,region,seed,x0,z0,rep,seconds,chunks_per_s,h2d_ms,biome_ms,noise_ms,aquifer_ms,fill_ms,surface_ms,d2h_ms,kernel_ms,streams
+cpu-port-terrain,verify_origin,terrain-cpu,32,256,16,123456789,0,0,0,0.279635,915.480,0.0000,6.9731,0.0000,0.0000,0.0000,272.6616,0.0000,279.6347,2
+cpu-port-terrain,verify_negative,terrain-cpu,32,256,16,123456789,-300,-220,0,0.279659,915.400,0.0000,10.2261,0.0000,0.0000,0.0000,269.4332,0.0000,279.6593,2
+cpu-port-terrain,verify_border,terrain-cpu,32,256,8,123456789,1874992,1874992,0,0.086387,740.850,0.0000,2.9050,0.0000,0.0000,0.0000,83.4824,0.0000,86.3874,2

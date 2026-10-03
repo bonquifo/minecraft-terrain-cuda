@@ -27,8 +27,15 @@ LOG = None
 VERIFY = [('origin', 0, 0, 16), ('negative', -300, -220, 16), ('border', 1874992, 1874992, 8)]
 
 
+HOME = os.path.expanduser('~')
+
+
+def redact(text):
+    return text.replace(HOME, '%USERPROFILE%')   # keep local user names out of the committed logs
+
+
 def log(msg):
-    line = '[%s] %s' % (datetime.datetime.now().strftime('%H:%M:%S'), msg)
+    line = redact('[%s] %s' % (datetime.datetime.now().strftime('%H:%M:%S'), msg))
     print(line, flush=True)
     LOG.write(line + '\n')
     LOG.flush()
@@ -40,7 +47,7 @@ def run(cmd, cwd=ROOT, env=None):
     for line in p.stdout.splitlines():
         if 'WARNING' in line or 'sun.misc.Unsafe' in line or line.startswith('[') and 'INFO' in line and 'STDOUT' not in line:
             continue
-        LOG.write('    ' + line + '\n')
+        LOG.write('    ' + redact(line) + '\n')
     LOG.flush()
     tail = [l for l in p.stdout.splitlines() if l.strip()][-3:]
     for l in tail:

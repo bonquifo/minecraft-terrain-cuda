@@ -1,0 +1,17 @@
+
+
+Name                      : AMD Ryzen 9 9950X 16-Core Processor            
+NumberOfCores             : 16
+NumberOfLogicalProcessors : 32
+MaxClockSpeed             : 4300
+
+
+
+
+
+Caption : Microsoft Windows 11 Home
+Version : 10.0.26200
+
+
+
+134813700096

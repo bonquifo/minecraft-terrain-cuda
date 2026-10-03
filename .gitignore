@@ -35,3 +35,5 @@ __pycache__/
 
 # Portable toolchain copies (JDK 25, Ninja) used until system installs exist
 .tools/
+profiles/*.sqlite
+profiles/nsys_bench.csv

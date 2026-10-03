@@ -1,0 +1,2 @@
+name, driver_version, clocks.current.sm [MHz], clocks.max.sm [MHz], clocks.current.memory [MHz], temperature.gpu, power.draw [W], power.limit [W], pstate
+NVIDIA GeForce RTX 5090, 591.86, 375 MHz, 3090 MHz, 810 MHz, 32, 30.21 W, 600.00 W, P5

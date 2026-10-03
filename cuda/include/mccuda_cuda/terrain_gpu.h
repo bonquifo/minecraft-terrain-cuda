@@ -22,7 +22,9 @@ struct TerrainTiming {
 
 class FullTerrainGenerator {
 public:
-    FullTerrainGenerator(const IR& ir, const TerrainModel& tm, int max_batch_chunks = 256);
+    // pipeline_slots: batches in flight (2: transfers and host work of one batch overlap
+    // the next batch's kernels; 1: strictly sequential, for per-stage timing).
+    FullTerrainGenerator(const IR& ir, const TerrainModel& tm, int max_batch_chunks = 256, int pipeline_slots = 2);
     ~FullTerrainGenerator();
     FullTerrainGenerator(const FullTerrainGenerator&) = delete;
     FullTerrainGenerator& operator=(const FullTerrainGenerator&) = delete;

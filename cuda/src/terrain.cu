@@ -10,6 +10,7 @@
 #include <climits>
 #include <cstdio>
 #include <map>
+#include <unordered_map>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -953,48 +954,62 @@ __global__ void k_surface2(const ChunkXZ* chunks, int n, uint8_t* blocks, const 
 }  // namespace
 
 // ---- host side ---------------------------------------------------------------------------
-struct FullTerrainGenerator::Impl {
-    const IR& ir;
-    const TerrainModel& tm;
-    int max_batch;
-    int rows;
-    size_t per;
-    int qper;
-    std::unique_ptr<TerrainSeed> seed;
-    PerlinOctave* d_octaves = nullptr;
-    StackLayer* d_layers = nullptr;
-    BiomeTree::FlatNode* d_tree = nullptr;
-    int32_t* d_tree_children = nullptr;
-    int32_t* d_leaf_biome = nullptr;
-    int32_t* d_leaf_node = nullptr;
-    // batch buffers
+namespace {
+
+__global__ void k_copy_bytes(size_t n, const uint8_t* src, uint8_t* dst) {
+    size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i < n / 16) reinterpret_cast<uint4*>(dst)[i] = reinterpret_cast<const uint4*>(src)[i];
+    else if (i == n / 16)
+        for (size_t k = n & ~size_t{15}; k < n; ++k) dst[k] = src[k];
+}
+
+__global__ void k_gather_biomes(int n, const int* nb, const uint8_t* bbiomes, int qper, uint8_t* out) {
+    size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (idx >= static_cast<size_t>(n) * qper) return;
+    size_t i = idx / qper, q = idx % qper;
+    out[idx] = bbiomes[static_cast<size_t>(nb[i * 9 + 4]) * qper + q];
+}
+
+}  // namespace
+
+// Device state of one batch in flight. With two slots (two streams), a batch's
+// transfers and host-side preparation overlap the next batch's kernels.
+struct Slot {
+    cudaStream_t stream = nullptr;
+    cudaEvent_t ev[9] = {};
+    bool pending = false;
+    // the batch whose download is (or will be) enqueued
+    int n = 0;
+    uint8_t *terrain_out = nullptr, *biomes_out = nullptr, *aquifer_out = nullptr;
+    uint8_t* d_aqsnap = nullptr;   // aquifer-fill snapshot (allocated when requested)
+    // pinned host staging for the uploads
+    ChunkXZ *h_chunks = nullptr, *h_bchunks = nullptr;
+    int* h_nb = nullptr;
+    // device buffers
     ChunkXZ *d_chunks = nullptr, *d_bchunks = nullptr;
     int* d_nb = nullptr;
     float *d_bcol = nullptr, *d_col = nullptr, *d_corners = nullptr, *d_prelim = nullptr;
     int64_t *d_targets = nullptr, *d_mindist = nullptr;
     uint8_t* d_ties = nullptr;
     int32_t *d_firstmin = nullptr, *d_grid = nullptr;
-    uint8_t *d_bbiomes = nullptr, *d_blocks = nullptr;
+    uint8_t *d_bbiomes = nullptr, *d_blocks = nullptr, *d_bout = nullptr;
     int4* d_cells = nullptr;
     int *d_skip = nullptr, *d_h0 = nullptr, *d_h1 = nullptr, *d_h2 = nullptr;
     int bcap = 0;                  // biome-chunk capacity of the biome buffers
-    int sl = 0;                    // axis-site layers (AxisRec records per coordinate)
-    AxisLayer* d_axis_layers = nullptr;
-    double* d_zoom_sq = nullptr;
-    float* d_zoom_sqf = nullptr;
     std::unique_ptr<Dedupe> grid_dedupe, col_dedupe;
     uint64_t *d_col_keys = nullptr, *d_col_unique = nullptr;
     int *d_colmap = nullptr, *d_col_count = nullptr;
     uint64_t *d_grid_keys = nullptr, *d_grid_unique = nullptr;
     int *d_grid_map = nullptr, *d_grid_count = nullptr;
     float* d_grid_vals = nullptr;
-    AxisRec *d_axis_x = nullptr, *d_axis_y = nullptr, *d_axis_z = nullptr;
-    cudaEvent_t ev[9];
+    AxisRec *d_axis_x = nullptr, *d_axis_z = nullptr;
 
-    Impl(const IR& ir_, const TerrainModel& tm_, int mb) : ir(ir_), tm(tm_), max_batch(mb) {
-        rows = ir.height / 8 + 1;
-        per = static_cast<size_t>(ir.height) * 256;
-        qper = 16 * (ir.height / 4);
+    Slot(int mb, int rows, size_t per, int qper, int cells) {
+        check(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking), "stream");
+        for (auto& e : ev) check(cudaEventCreate(&e), "event");
+        check(cudaMallocHost(&h_chunks, sizeof(ChunkXZ) * mb), "pinned");
+        check(cudaMallocHost(&h_bchunks, sizeof(ChunkXZ) * mb * 9), "pinned");
+        check(cudaMallocHost(&h_nb, sizeof(int) * mb * 9), "pinned");
         check(cudaMalloc(&d_chunks, sizeof(ChunkXZ) * mb), "malloc");
         check(cudaMalloc(&d_nb, sizeof(int) * mb * 9), "malloc");
         check(cudaMalloc(&d_col, sizeof(float) * mb * kCols * std::max(gen::kNumColumns, 1)), "malloc");
@@ -1015,41 +1030,30 @@ struct FullTerrainGenerator::Impl {
         col_dedupe = std::make_unique<Dedupe>(static_cast<int>(ck), 62);
         check(cudaMalloc(&d_prelim, sizeof(float) * mb * 4), "malloc");
         check(cudaMalloc(&d_skip, sizeof(int) * mb), "malloc");
-        int aq_min = floor_div(ir.min_y + 1, 12) - 1, aq_max = floor_div(ir.min_y + ir.height - 1 + 1, 12) + 1;
-        int cells = 9 * (aq_max - aq_min + 1);
         check(cudaMalloc(&d_cells, sizeof(int4) * mb * cells * 2), "malloc");
         check(cudaMalloc(&d_blocks, mb * per), "malloc");
+        check(cudaMalloc(&d_bout, static_cast<size_t>(mb) * qper), "malloc");
         check(cudaMalloc(&d_h0, sizeof(int) * mb * 256), "malloc");
         check(cudaMalloc(&d_h1, sizeof(int) * mb * 256), "malloc");
         check(cudaMalloc(&d_h2, sizeof(int) * mb * 256), "malloc");
-        for (auto& e : ev) cudaEventCreate(&e);
-        check(cudaDeviceSetLimit(cudaLimitStackSize, 16 * 1024), "stack limit");
-        check(cudaMalloc(&d_zoom_sq, sizeof(double) * 8192), "malloc zoom table");
-        check(cudaMalloc(&d_zoom_sqf, sizeof(float) * 8192), "malloc zoom table");
-        k_zoom_squares<<<32, 256>>>(d_zoom_sq, d_zoom_sqf);
-        check(cudaGetLastError(), "zoom table");
-        if (tm.palette.size() > 64 || tm.biomes.size() > 128) throw std::runtime_error("palette/biome tables too large");
     }
 
-    ~Impl() {
-        void* ptrs[] = {d_octaves, d_layers, d_tree, d_tree_children, d_leaf_biome, d_leaf_node, d_chunks, d_bchunks, d_nb, d_bcol, d_targets, d_mindist,
-                        d_ties, d_firstmin, d_bbiomes, d_col, d_corners, d_grid, d_prelim, d_skip, d_cells, d_blocks, d_h0, d_h1, d_h2,
-                        d_axis_layers, d_axis_x, d_axis_y, d_axis_z, d_zoom_sq, d_zoom_sqf, d_grid_keys, d_grid_unique, d_grid_map, d_grid_count,
-                        d_grid_vals, d_col_keys, d_col_unique, d_colmap, d_col_count};
+    ~Slot() {
+        if (stream) cudaStreamSynchronize(stream);
+        void* ptrs[] = {d_chunks, d_bchunks, d_nb, d_bcol, d_targets, d_mindist, d_ties, d_firstmin, d_bbiomes, d_col, d_corners, d_grid, d_prelim, d_skip,
+                        d_cells, d_blocks, d_bout, d_h0, d_h1, d_h2, d_axis_x, d_axis_z, d_grid_keys, d_grid_unique, d_grid_map, d_grid_count, d_grid_vals,
+                        d_col_keys, d_col_unique, d_colmap, d_col_count, d_aqsnap};
         for (void* p : ptrs) cudaFree(p);
+        cudaFreeHost(h_chunks);
+        cudaFreeHost(h_bchunks);
+        cudaFreeHost(h_nb);
         for (auto& e : ev) cudaEventDestroy(e);
-    }
-
-    template <typename T>
-    void upload(T*& d, const std::vector<T>& v) {
-        cudaFree(d);
-        check(cudaMalloc(&d, sizeof(T) * std::max<size_t>(v.size(), 1)), "malloc table");
-        check(cudaMemcpy(d, v.data(), sizeof(T) * v.size(), cudaMemcpyHostToDevice), "upload table");
+        if (stream) cudaStreamDestroy(stream);
     }
 
     // Biome buffers grow to the largest neighbourhood union seen (a square region of
     // n chunks needs about (sqrt(n) + 2)^2 biome chunks, scattered chunks up to 9n).
-    void ensure_biome_capacity(int nbk) {
+    void ensure_biome_capacity(int nbk, int qper) {
         if (nbk <= bcap) return;
         void* old[] = {d_bchunks, d_bcol, d_targets, d_mindist, d_firstmin, d_bbiomes, d_ties};
         for (void* p : old) cudaFree(p);
@@ -1062,6 +1066,60 @@ struct FullTerrainGenerator::Impl {
         check(cudaMalloc(&d_bbiomes, q), "malloc");
         check(cudaMalloc(&d_ties, q), "malloc");
         bcap = nbk;
+    }
+};
+
+struct FullTerrainGenerator::Impl {
+    const IR& ir;
+    const TerrainModel& tm;
+    int max_batch;
+    int rows;
+    size_t per;
+    int qper;
+    int cells;
+    std::unique_ptr<TerrainSeed> seed;
+    PerlinOctave* d_octaves = nullptr;
+    StackLayer* d_layers = nullptr;
+    BiomeTree::FlatNode* d_tree = nullptr;
+    int32_t* d_tree_children = nullptr;
+    int32_t* d_leaf_biome = nullptr;
+    int32_t* d_leaf_node = nullptr;
+    int sl = 0;                    // axis-site layers (AxisRec records per coordinate)
+    AxisLayer* d_axis_layers = nullptr;
+    AxisRec* d_axis_y = nullptr;
+    double* d_zoom_sq = nullptr;
+    float* d_zoom_sqf = nullptr;
+    std::vector<std::unique_ptr<Slot>> slots;
+    size_t next_slot = 0;
+
+    Impl(const IR& ir_, const TerrainModel& tm_, int mb, int nslots) : ir(ir_), tm(tm_), max_batch(mb) {
+        rows = ir.height / 8 + 1;
+        per = static_cast<size_t>(ir.height) * 256;
+        qper = 16 * (ir.height / 4);
+        int aq_min = floor_div(ir.min_y + 1, 12) - 1, aq_max = floor_div(ir.min_y + ir.height - 1 + 1, 12) + 1;
+        cells = 9 * (aq_max - aq_min + 1);
+        if (tm.palette.size() > 64 || tm.biomes.size() > 128) throw std::runtime_error("palette/biome tables too large");
+        check(cudaDeviceSetLimit(cudaLimitStackSize, 16 * 1024), "stack limit");
+        for (int i = 0; i < std::max(nslots, 1); ++i) slots.push_back(std::make_unique<Slot>(mb, rows, per, qper, cells));
+        check(cudaMalloc(&d_zoom_sq, sizeof(double) * 8192), "malloc zoom table");
+        check(cudaMalloc(&d_zoom_sqf, sizeof(float) * 8192), "malloc zoom table");
+        k_zoom_squares<<<32, 256>>>(d_zoom_sq, d_zoom_sqf);
+        check(cudaGetLastError(), "zoom table");
+        check(cudaDeviceSynchronize(), "init");
+    }
+
+    ~Impl() {
+        cudaDeviceSynchronize();
+        slots.clear();
+        void* ptrs[] = {d_octaves, d_layers, d_tree, d_tree_children, d_leaf_biome, d_leaf_node, d_axis_layers, d_axis_y, d_zoom_sq, d_zoom_sqf};
+        for (void* p : ptrs) cudaFree(p);
+    }
+
+    template <typename T>
+    void upload(T*& d, const std::vector<T>& v) {
+        cudaFree(d);
+        check(cudaMalloc(&d, sizeof(T) * std::max<size_t>(v.size(), 1)), "malloc table");
+        check(cudaMemcpy(d, v.data(), sizeof(T) * v.size(), cudaMemcpyHostToDevice), "upload table");
     }
 
     // Axis-site layer constants, record offsets, and the y records of the corner rows
@@ -1092,10 +1150,12 @@ struct FullTerrainGenerator::Impl {
             }
         upload(d_axis_layers, layers);
         upload(d_axis_y, ytab);
-        cudaFree(d_axis_x);
-        cudaFree(d_axis_z);
-        check(cudaMalloc(&d_axis_x, sizeof(AxisRec) * static_cast<size_t>(max_batch) * kCols * std::max(sl, 1)), "malloc axis x");
-        check(cudaMalloc(&d_axis_z, sizeof(AxisRec) * static_cast<size_t>(max_batch) * kCols * std::max(sl, 1)), "malloc axis z");
+        for (auto& S : slots) {
+            cudaFree(S->d_axis_x);
+            cudaFree(S->d_axis_z);
+            check(cudaMalloc(&S->d_axis_x, sizeof(AxisRec) * static_cast<size_t>(max_batch) * kCols * std::max(sl, 1)), "malloc axis x");
+            check(cudaMalloc(&S->d_axis_z, sizeof(AxisRec) * static_cast<size_t>(max_batch) * kCols * std::max(sl, 1)), "malloc axis z");
+        }
     }
 
     void set_seed(int64_t s) {
@@ -1179,103 +1239,144 @@ struct FullTerrainGenerator::Impl {
         check(cudaMemcpyToSymbol(c_tt, &tt, sizeof(tt)), "upload terrain tables");
     }
 
-    void run_batch(const ChunkXZ* chunks, int n, uint8_t* terrain_out, uint8_t* biomes_out, uint8_t* aquifer_out, TerrainTiming* tm_) {
+    // Enqueues one batch's uploads and kernels on slot S (returns without waiting); its
+    // downloads are enqueued separately by download(), after the next batch's uploads.
+    void run_batch(Slot& S, const ChunkXZ* chunks, int n, uint8_t* terrain_out, uint8_t* biomes_out, uint8_t* aquifer_out) {
+        S.n = n;
+        S.terrain_out = terrain_out;
+        S.biomes_out = biomes_out;
+        S.aquifer_out = aquifer_out;
+        if (aquifer_out && !S.d_aqsnap) check(cudaMalloc(&S.d_aqsnap, static_cast<size_t>(max_batch) * per), "malloc");
         // Biome chunks: the union of every output chunk's 3x3 neighbourhood.
-        std::map<std::pair<int, int>, int> bindex;
-        std::vector<ChunkXZ> bchunks;
-        std::vector<int> nb(static_cast<size_t>(n) * 9);
-        for (int i = 0; i < n; ++i)
+        std::unordered_map<uint64_t, int> bindex;
+        bindex.reserve(static_cast<size_t>(n) * 2);
+        int nbk = 0;
+        for (int i = 0; i < n; ++i) {
+            S.h_chunks[i] = chunks[i];
             for (int dz = -1; dz <= 1; ++dz)
                 for (int dx = -1; dx <= 1; ++dx) {
-                    auto key = std::make_pair(chunks[i].x + dx, chunks[i].z + dz);
+                    const int bx = chunks[i].x + dx, bz = chunks[i].z + dz;
+                    const uint64_t key = (static_cast<uint64_t>(static_cast<uint32_t>(bx)) << 32) | static_cast<uint32_t>(bz);
                     auto it = bindex.find(key);
                     if (it == bindex.end()) {
-                        it = bindex.emplace(key, static_cast<int>(bchunks.size())).first;
-                        bchunks.push_back({key.first, key.second});
+                        it = bindex.emplace(key, nbk).first;
+                        S.h_bchunks[nbk++] = {bx, bz};
                     }
-                    nb[static_cast<size_t>(i) * 9 + (dz + 1) * 3 + dx + 1] = it->second;
+                    S.h_nb[static_cast<size_t>(i) * 9 + (dz + 1) * 3 + dx + 1] = it->second;
                 }
-        int nbk = static_cast<int>(bchunks.size());
-        ensure_biome_capacity(nbk);
-        cudaEventRecord(ev[0]);
-        check(cudaMemcpy(d_chunks, chunks, sizeof(ChunkXZ) * n, cudaMemcpyHostToDevice), "upload chunks");
-        check(cudaMemcpy(d_bchunks, bchunks.data(), sizeof(ChunkXZ) * nbk, cudaMemcpyHostToDevice), "upload biome chunks");
-        check(cudaMemcpy(d_nb, nb.data(), sizeof(int) * nb.size(), cudaMemcpyHostToDevice), "upload neighbours");
-        cudaEventRecord(ev[1]);
+        }
+        S.ensure_biome_capacity(nbk, qper);
+        cudaStream_t st = S.stream;
+        check(cudaEventRecord(S.ev[0], st), "event");
+        check(cudaMemcpyAsync(S.d_chunks, S.h_chunks, sizeof(ChunkXZ) * n, cudaMemcpyHostToDevice, st), "upload chunks");
+        check(cudaMemcpyAsync(S.d_bchunks, S.h_bchunks, sizeof(ChunkXZ) * nbk, cudaMemcpyHostToDevice, st), "upload biome chunks");
+        check(cudaMemcpyAsync(S.d_nb, S.h_nb, sizeof(int) * n * 9, cudaMemcpyHostToDevice, st), "upload neighbours");
+        check(cudaEventRecord(S.ev[1], st), "event");
         const int tb = 128;
         auto grid = [](size_t threads, int block) { return static_cast<unsigned>((threads + block - 1) / block); };
-        k_biome_columns<<<grid(static_cast<size_t>(nbk) * 16, tb), tb>>>(d_bchunks, nbk, d_bcol);
+        k_biome_columns<<<grid(static_cast<size_t>(nbk) * 16, tb), tb, 0, st>>>(S.d_bchunks, nbk, S.d_bcol);
         const int runs = (ir.height / 4 + kBiomeRun - 1) / kBiomeRun;
-        k_biome_quarts<<<grid(static_cast<size_t>(nbk) * 16 * runs, tb), tb>>>(d_bchunks, nbk, d_bcol, d_targets, d_firstmin, d_mindist);
-        k_biome_ties<<<grid(static_cast<size_t>(nbk) * qper, tb), tb>>>(nbk, d_targets, d_firstmin, d_mindist, d_ties);
-        k_biome_chain<<<grid(static_cast<size_t>(nbk) * 32, tb), tb>>>(nbk, d_targets, d_firstmin, d_mindist, d_ties, d_bbiomes);
+        k_biome_quarts<<<grid(static_cast<size_t>(nbk) * 16 * runs, tb), tb, 0, st>>>(S.d_bchunks, nbk, S.d_bcol, S.d_targets, S.d_firstmin, S.d_mindist);
+        k_biome_ties<<<grid(static_cast<size_t>(nbk) * qper, tb), tb, 0, st>>>(nbk, S.d_targets, S.d_firstmin, S.d_mindist, S.d_ties);
+        k_biome_chain<<<grid(static_cast<size_t>(nbk) * 32, tb), tb, 0, st>>>(nbk, S.d_targets, S.d_firstmin, S.d_mindist, S.d_ties, S.d_bbiomes);
         check(cudaGetLastError(), "biome kernels");
-        cudaEventRecord(ev[2]);
+        check(cudaEventRecord(S.ev[2], st), "event");
         const int ck = n * kCols;   // upper bound of distinct corner columns
-        k_col_keys<<<grid(ck, tb), tb>>>(d_chunks, n, d_col_keys);
-        col_dedupe->run(d_col_keys, ck, d_col_unique, d_colmap, d_col_count);
-        k_columns<<<grid(ck, tb), tb>>>(ck, d_col_unique, d_col_count, d_col);
-        k_axis_xz<<<grid(static_cast<size_t>(ck) * sl, tb), tb>>>(ck, d_col_unique, d_col_count, d_axis_layers, sl, d_axis_x, d_axis_z);
-        k_corners<<<grid(static_cast<size_t>(ck) * rows, tb), tb>>>(ck, d_col_unique, d_col_count, d_col, d_corners, rows, d_axis_x, d_axis_y, d_axis_z, sl);
+        k_col_keys<<<grid(ck, tb), tb, 0, st>>>(S.d_chunks, n, S.d_col_keys);
+        S.col_dedupe->run(S.d_col_keys, ck, S.d_col_unique, S.d_colmap, S.d_col_count, st);
+        k_columns<<<grid(ck, tb), tb, 0, st>>>(ck, S.d_col_unique, S.d_col_count, S.d_col);
+        k_axis_xz<<<grid(static_cast<size_t>(ck) * sl, tb), tb, 0, st>>>(ck, S.d_col_unique, S.d_col_count, d_axis_layers, sl, S.d_axis_x, S.d_axis_z);
+        k_corners<<<grid(static_cast<size_t>(ck) * rows, tb), tb, 0, st>>>(ck, S.d_col_unique, S.d_col_count, S.d_col, S.d_corners, rows, S.d_axis_x, d_axis_y,
+                                                                          S.d_axis_z, sl);
         check(cudaGetLastError(), "noise kernels");
-        cudaEventRecord(ev[3]);
+        check(cudaEventRecord(S.ev[3], st), "event");
         const int gk = n * kGridKeys;
-        k_grid_keys<<<grid(gk, tb), tb>>>(d_chunks, n, d_grid_keys);
-        grid_dedupe->run(d_grid_keys, gk, d_grid_unique, d_grid_map, d_grid_count);
-        k_fts_unique<<<grid(gk, tb), tb>>>(gk, d_grid_unique, d_grid_count, d_grid_vals);
-        k_grid_scatter<<<grid(gk, tb), tb>>>(n, d_grid_map, d_grid_vals, d_grid, d_prelim);
-        k_aquifer_skip<<<grid(n, tb), tb>>>(n, d_grid, d_skip);
-        int cell_per = 9 * (floor_div(ir.min_y + ir.height, 12) + 1 - (floor_div(ir.min_y + 1, 12) - 1) + 1);
-        k_aquifer_cells<<<grid(static_cast<size_t>(n) * cell_per, tb), tb>>>(d_chunks, n, d_grid, d_cells);
+        k_grid_keys<<<grid(gk, tb), tb, 0, st>>>(S.d_chunks, n, S.d_grid_keys);
+        S.grid_dedupe->run(S.d_grid_keys, gk, S.d_grid_unique, S.d_grid_map, S.d_grid_count, st);
+        k_fts_unique<<<grid(gk, tb), tb, 0, st>>>(gk, S.d_grid_unique, S.d_grid_count, S.d_grid_vals);
+        k_grid_scatter<<<grid(gk, tb), tb, 0, st>>>(n, S.d_grid_map, S.d_grid_vals, S.d_grid, S.d_prelim);
+        k_aquifer_skip<<<grid(n, tb), tb, 0, st>>>(n, S.d_grid, S.d_skip);
+        k_aquifer_cells<<<grid(static_cast<size_t>(n) * cells, tb), tb, 0, st>>>(S.d_chunks, n, S.d_grid, S.d_cells);
         check(cudaGetLastError(), "aquifer kernels");
-        cudaEventRecord(ev[4]);
-        k_blocks<<<grid(static_cast<size_t>(n) * per, 256), 256>>>(d_chunks, n, d_corners, d_colmap, rows, d_cells, d_skip, nullptr, d_blocks);
+        check(cudaEventRecord(S.ev[4], st), "event");
+        k_blocks<<<grid(static_cast<size_t>(n) * per, 256), 256, 0, st>>>(S.d_chunks, n, S.d_corners, S.d_colmap, rows, S.d_cells, S.d_skip, nullptr, S.d_blocks);
         check(cudaGetLastError(), "fill kernel");
-        cudaEventRecord(ev[5]);
-        if (aquifer_out) check(cudaMemcpy(aquifer_out, d_blocks, static_cast<size_t>(n) * per, cudaMemcpyDeviceToHost), "download aquifer");
-        cudaEventRecord(ev[6]);
-        k_heights<<<grid(static_cast<size_t>(n) * 256, tb), tb>>>(n, d_blocks, d_h0);
-        k_surface1<<<grid(static_cast<size_t>(n) * 256, 64), 64>>>(d_chunks, n, d_blocks, d_h0, d_h1, d_h2, d_nb, d_bbiomes, d_corners, d_colmap, rows, d_prelim);
-        k_surface2<<<grid(static_cast<size_t>(n) * 256, 64), 64>>>(d_chunks, n, d_blocks, d_h0, d_h1, d_h2, d_nb, d_bbiomes, d_corners, d_colmap, rows, d_prelim);
+        check(cudaEventRecord(S.ev[5], st), "event");
+        if (aquifer_out) k_copy_bytes<<<grid(static_cast<size_t>(n) * per / 16 + 1, 256), 256, 0, st>>>(static_cast<size_t>(n) * per, S.d_blocks, S.d_aqsnap);
+        check(cudaEventRecord(S.ev[6], st), "event");
+        k_heights<<<grid(static_cast<size_t>(n) * 256, tb), tb, 0, st>>>(n, S.d_blocks, S.d_h0);
+        k_surface1<<<grid(static_cast<size_t>(n) * 256, 64), 64, 0, st>>>(S.d_chunks, n, S.d_blocks, S.d_h0, S.d_h1, S.d_h2, S.d_nb, S.d_bbiomes, S.d_corners,
+                                                                          S.d_colmap, rows, S.d_prelim);
+        k_surface2<<<grid(static_cast<size_t>(n) * 256, 64), 64, 0, st>>>(S.d_chunks, n, S.d_blocks, S.d_h0, S.d_h1, S.d_h2, S.d_nb, S.d_bbiomes, S.d_corners,
+                                                                          S.d_colmap, rows, S.d_prelim);
+        if (biomes_out) k_gather_biomes<<<grid(static_cast<size_t>(n) * qper, tb), tb, 0, st>>>(n, S.d_nb, S.d_bbiomes, qper, S.d_bout);
         check(cudaGetLastError(), "surface kernels");
-        cudaEventRecord(ev[7]);
-        check(cudaMemcpy(terrain_out, d_blocks, static_cast<size_t>(n) * per, cudaMemcpyDeviceToHost), "download terrain");
-        if (biomes_out) {
-            std::vector<uint8_t> all(static_cast<size_t>(nbk) * qper);
-            check(cudaMemcpy(all.data(), d_bbiomes, all.size(), cudaMemcpyDeviceToHost), "download biomes");
-            for (int i = 0; i < n; ++i) {
-                int b = nb[static_cast<size_t>(i) * 9 + 4];
-                std::copy(all.begin() + static_cast<size_t>(b) * qper, all.begin() + static_cast<size_t>(b + 1) * qper, biomes_out + static_cast<size_t>(i) * qper);
-            }
-        }
-        cudaEventRecord(ev[8]);
-        check(cudaEventSynchronize(ev[8]), "sync");
-        if (tm_) {
-            float t[8];
-            for (int i = 0; i < 8; ++i) check(cudaEventElapsedTime(&t[i], ev[i], ev[i + 1]), "event timing");
-            tm_->h2d_ms += t[0];
-            tm_->biome_ms += t[1];
-            tm_->noise_ms += t[2];
-            tm_->aquifer_ms += t[3];
-            tm_->fill_ms += t[4];
-            tm_->d2h_ms += t[5] + t[7];
-            tm_->surface_ms += t[6];
-        }
+        check(cudaEventRecord(S.ev[7], st), "event");
+    }
+
+    // Enqueues slot S's downloads. Copies are executed in submission order, so a
+    // download enqueued before the next batch's uploads would hold those uploads (and
+    // the next batch's kernels) until this batch's kernels finish; generate() therefore
+    // calls this after enqueueing the following batch.
+    void download(Slot& S) {
+        cudaStream_t st = S.stream;
+        check(cudaMemcpyAsync(S.terrain_out, S.d_blocks, static_cast<size_t>(S.n) * per, cudaMemcpyDeviceToHost, st), "download terrain");
+        if (S.biomes_out) check(cudaMemcpyAsync(S.biomes_out, S.d_bout, static_cast<size_t>(S.n) * qper, cudaMemcpyDeviceToHost, st), "download biomes");
+        if (S.aquifer_out) check(cudaMemcpyAsync(S.aquifer_out, S.d_aqsnap, static_cast<size_t>(S.n) * per, cudaMemcpyDeviceToHost, st), "download aquifer");
+        check(cudaEventRecord(S.ev[8], st), "event");
+        S.pending = true;
+    }
+
+    // Waits for slot S's batch and adds its stage times (CUDA events on its stream).
+    void collect(Slot& S, TerrainTiming* tm_) {
+        if (!S.pending) return;
+        check(cudaEventSynchronize(S.ev[8]), "sync");
+        S.pending = false;
+        if (!tm_) return;
+        float t[8];
+        for (int i = 0; i < 8; ++i) check(cudaEventElapsedTime(&t[i], S.ev[i], S.ev[i + 1]), "event timing");
+        tm_->h2d_ms += t[0];
+        tm_->biome_ms += t[1];
+        tm_->noise_ms += t[2];
+        tm_->aquifer_ms += t[3];
+        tm_->fill_ms += t[4];
+        tm_->surface_ms += t[5] + t[6];   // t[5]: the optional aquifer snapshot copy
+        tm_->d2h_ms += t[7];              // includes waiting behind the other slot's work when pipelined
+    }
+
+    void collect_all(TerrainTiming* tm_) {
+        for (auto& S : slots) collect(*S, tm_);
     }
 };
 
-FullTerrainGenerator::FullTerrainGenerator(const IR& ir, const TerrainModel& tm, int max_batch) : impl_(std::make_unique<Impl>(ir, tm, max_batch)) {}
+FullTerrainGenerator::FullTerrainGenerator(const IR& ir, const TerrainModel& tm, int max_batch, int pipeline_slots)
+    : impl_(std::make_unique<Impl>(ir, tm, max_batch, pipeline_slots)) {}
 FullTerrainGenerator::~FullTerrainGenerator() = default;
-void FullTerrainGenerator::set_seed(int64_t seed) { impl_->set_seed(seed); }
+void FullTerrainGenerator::set_seed(int64_t seed) {
+    impl_->collect_all(nullptr);
+    impl_->set_seed(seed);
+}
 
 void FullTerrainGenerator::generate(const ChunkXZ* chunks, int count, uint8_t* terrain_out, uint8_t* biomes_out, uint8_t* aquifer_out, TerrainTiming* timing) {
     auto t0 = std::chrono::steady_clock::now();
-    for (int off = 0; off < count; off += impl_->max_batch) {
-        int n = std::min(impl_->max_batch, count - off);
-        impl_->run_batch(chunks + off, n, terrain_out + static_cast<size_t>(off) * impl_->per,
-                         biomes_out ? biomes_out + static_cast<size_t>(off) * impl_->qper : nullptr,
-                         aquifer_out ? aquifer_out + static_cast<size_t>(off) * impl_->per : nullptr, timing);
+    Impl& I = *impl_;
+    Slot* prev = nullptr;
+    for (int off = 0; off < count; off += I.max_batch) {
+        int n = std::min(I.max_batch, count - off);
+        Slot& S = *I.slots[I.next_slot];
+        I.next_slot = (I.next_slot + 1) % I.slots.size();
+        if (prev == &S) {   // single slot: its batch's download goes first
+            I.download(S);
+            prev = nullptr;
+        }
+        I.collect(S, timing);   // the slot's previous batch must be finished before its buffers are reused
+        I.run_batch(S, chunks + off, n, terrain_out + static_cast<size_t>(off) * I.per, biomes_out ? biomes_out + static_cast<size_t>(off) * I.qper : nullptr,
+                    aquifer_out ? aquifer_out + static_cast<size_t>(off) * I.per : nullptr);
+        if (prev) I.download(*prev);   // after this batch's uploads (see download())
+        prev = &S;
     }
+    if (prev) I.download(*prev);
+    I.collect_all(timing);
     if (timing) timing->wall_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }
 

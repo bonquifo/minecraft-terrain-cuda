@@ -6,6 +6,7 @@
 //     --batch B       GPU chunks per launch (default 256) --threads T  CPU worker threads (default 1)
 //     --version V     core-gpu kernel version (default 0) --verify F  compare the region with a vanilla dump (u16)
 //     --pageable      GPU output to pageable instead of pinned host memory
+//     --streams S     GPU batches in flight (default 2: transfers overlap the next batch's kernels)
 //     --out FILE      CSV to append to (default bench/results/bench.csv)   --tag NAME
 //
 // Region semantics match the vanilla bench (oracle bench-terrain): every chunk of
@@ -41,7 +42,7 @@ namespace {
 
 struct Options {
     std::string mode = "terrain-gpu", data = MCCUDA_DATA_DIR, out = "bench/results/bench.csv", tag, verify;
-    int region = 16, x0 = 0, z0 = 0, reps = 5, warmup = 2, batch = 256, threads = 1, version = 0;
+    int region = 16, x0 = 0, z0 = 0, reps = 5, warmup = 2, batch = 256, threads = 1, version = 0, streams = 2;
     int64_t seed = 123456789;
     bool pinned = true;
 };
@@ -96,14 +97,16 @@ void write_rows(const Options& o, const std::string& impl, const std::vector<Row
     bool fresh = !std::filesystem::exists(p);
     std::ofstream f(p, std::ios::app);
     if (fresh)
-        f << "impl,tag,mode,threads,batch,region,seed,x0,z0,rep,seconds,chunks_per_s,h2d_ms,biome_ms,noise_ms,aquifer_ms,fill_ms,surface_ms,d2h_ms,kernel_ms\n";
+        f << "impl,tag,mode,threads,batch,region,seed,x0,z0,rep,seconds,chunks_per_s,h2d_ms,biome_ms,noise_ms,aquifer_ms,fill_ms,surface_ms,d2h_ms,kernel_ms,"
+             "streams\n";
     const int chunks = o.region * o.region;
     for (size_t r = 0; r < rows.size(); ++r) {
         const Row& w = rows[r];
         char line[512];
-        std::snprintf(line, sizeof line, "%s,%s,%s,%d,%d,%d,%lld,%d,%d,%zu,%.6f,%.3f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f\n", impl.c_str(),
+        std::snprintf(line, sizeof line, "%s,%s,%s,%d,%d,%d,%lld,%d,%d,%zu,%.6f,%.3f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%d\n", impl.c_str(),
                       o.tag.c_str(), o.mode.c_str(), o.threads, o.batch, o.region, static_cast<long long>(o.seed), o.x0, o.z0, r, w.seconds,
-                      chunks / w.seconds, w.t.h2d_ms, w.t.biome_ms, w.t.noise_ms, w.t.aquifer_ms, w.t.fill_ms, w.t.surface_ms, w.t.d2h_ms, w.t.kernel_ms());
+                      chunks / w.seconds, w.t.h2d_ms, w.t.biome_ms, w.t.noise_ms, w.t.aquifer_ms, w.t.fill_ms, w.t.surface_ms, w.t.d2h_ms, w.t.kernel_ms(),
+                      o.streams);
         f << line;
     }
 }
@@ -130,7 +133,7 @@ void bench_terrain_gpu(const Options& o, const IR& ir, const TerrainModel& tm) {
     uint8_t* out = o.pinned ? cuda::alloc_pinned(bytes) : new uint8_t[bytes];
     std::vector<Row> rows;
     {
-        cuda::FullTerrainGenerator gen(ir, tm, o.batch);
+        cuda::FullTerrainGenerator gen(ir, tm, o.batch, o.streams);
         double t0 = now_s();
         gen.set_seed(o.seed);
         std::printf("terrain-gpu: seed setup %.3f s (host tables + upload, once per seed, not in the timings)\n", now_s() - t0);
@@ -261,13 +264,14 @@ int main(int argc, char** argv) {
             else if (a == "--version") o.version = std::stoi(next());
             else if (a == "--seed") o.seed = std::stoll(next());
             else if (a == "--pageable") o.pinned = false;
+            else if (a == "--streams") o.streams = std::stoi(next());
             else throw std::runtime_error("unknown argument " + a);
         }
         const std::string ver = "26.3";
         IR ir = load_ir(o.data + "/gamedata/" + ver + "/overworld_ir.json");
         cuda::print_device();
-        std::printf("mode %s, region %dx%d at (%d,%d), seed %lld, reps %d (+%d warmup), batch %d, threads %d\n", o.mode.c_str(), o.region, o.region,
-                    o.x0, o.z0, static_cast<long long>(o.seed), o.reps, o.warmup, o.batch, o.threads);
+        std::printf("mode %s, region %dx%d at (%d,%d), seed %lld, reps %d (+%d warmup), batch %d, threads %d, streams %d\n", o.mode.c_str(), o.region,
+                    o.region, o.x0, o.z0, static_cast<long long>(o.seed), o.reps, o.warmup, o.batch, o.threads, o.streams);
         if (o.mode == "terrain-gpu" || o.mode == "terrain-cpu") {
             TerrainModel tm = load_terrain_model(o.data + "/gamedata/" + ver + "/overworld_terrain.json");
             if (o.mode == "terrain-gpu") bench_terrain_gpu(o, ir, tm);

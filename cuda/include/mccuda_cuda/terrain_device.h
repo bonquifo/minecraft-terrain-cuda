@@ -147,6 +147,84 @@ MCC_HD MCC_FI void zoom_quart_tab(int64_t seed, const double* sq, int x, int y, 
     bz = (min_i & 1) == 0 ? pz : pz + 1;
 }
 
+// Fiddle indices of one zoom corner, packed mx | my << 10 | mz << 20 (the LCG part of
+// fiddled_distance; it depends on the corner's quart only).
+MCC_HD MCC_FI int zoom_corner_m(int64_t seed, int xr, int yr, int zr) {
+    int64_t r = seed;
+    r = lcg_next(r, xr); r = lcg_next(r, yr); r = lcg_next(r, zr);
+    r = lcg_next(r, xr); r = lcg_next(r, yr); r = lcg_next(r, zr);
+    int mx = fiddle_index(r);
+    r = lcg_next(r, seed);
+    int my = fiddle_index(r);
+    r = lcg_next(r, seed);
+    int mz = fiddle_index(r);
+    return mx | (my << 10) | (mz << 20);
+}
+
+// zoom_quart_tab with an exact FP32 pre-filter (sqf = the squares rounded to float).
+//
+// The 8 distances are first computed in FP32. Every squared term lies in [0, 2.1025]
+// ((1 + 0.45)^2), so a distance S is at most 6.31. Three table roundings and two FP32
+// additions give |f - S| <= 3u * S <= 1.13e-6 (u = 2^-24), and vanilla's FP64 value d is
+// within 1.4e-15 of S, so |f - d| < 1.14e-6. A corner j with f_j > lim = fl(fmin + 8e-6)
+// (that rounding is <= 3.8e-7) therefore has
+//   d_j > fmin + 8e-6 - 3.8e-7 - 1.14e-6 > fmin + 1.14e-6 + 5e-6 > d_k + 5e-6
+// for k = argmin f: it can neither be the minimum nor tie it. If one corner remains it
+// is vanilla's choice; otherwise the remaining corners are compared with vanilla's FP64
+// arithmetic, in corner order, exactly as zoom_quart_tab does.
+MCC_HD MCC_FI void zoom_quart_fast(int64_t seed, const double* sq, const float* sqf, int x, int y, int z, int& bx, int& by, int& bz) {
+    int ax = x - 2, ay = y - 2, az = z - 2;
+    int px = ax >> 2, py = ay >> 2, pz = az >> 2;
+    int tx = (ax & 3) << 10, ty = (ay & 3) << 10, tz = (az & 3) << 10;
+    int ix[8], iy[8], iz[8];
+    float f[8];
+    float fmin = bits2f(0x7F800000u);   // +infinity
+#pragma unroll
+    for (int i = 0; i < 8; ++i) {
+        bool xe = (i & 4) == 0, ye = (i & 2) == 0, ze = (i & 1) == 0;
+        int m = zoom_corner_m(seed, xe ? px : px + 1, ye ? py : py + 1, ze ? pz : pz + 1);
+        ix[i] = tx + (xe ? 0 : 4096) + (m & 1023);
+        iy[i] = ty + (ye ? 0 : 4096) + ((m >> 10) & 1023);
+        iz[i] = tz + (ze ? 0 : 4096) + (m >> 20);
+        f[i] = (sqf[iz[i]] + sqf[iy[i]]) + sqf[ix[i]];
+        fmin = f[i] < fmin ? f[i] : fmin;
+    }
+    const float lim = fmin + 8.0e-6f;
+    int candidates = 0, min_i = 0;
+#pragma unroll
+    for (int i = 7; i >= 0; --i)
+        if (f[i] <= lim) { ++candidates; min_i = i; }
+    if (candidates > 1) {
+        uint64_t min_bits = 0x7FF0000000000000ull;   // +infinity
+#pragma unroll
+        for (int i = 0; i < 8; ++i) {
+            if (f[i] <= lim) {
+                uint64_t d = d2bits(sq[iz[i]] + sq[iy[i]] + sq[ix[i]]);
+                if (min_bits > d) { min_i = i; min_bits = d; }
+            }
+        }
+    }
+    bx = (min_i & 4) == 0 ? px : px + 1;
+    by = (min_i & 2) == 0 ? py : py + 1;
+    bz = (min_i & 1) == 0 ? pz : pz + 1;
+}
+
+// Number of FP32 candidates zoom_quart_fast keeps (> 1: resolved with FP64). Self-test only.
+MCC_HD MCC_FI int zoom_fast_candidates(int64_t seed, const float* sqf, int x, int y, int z) {
+    int ax = x - 2, ay = y - 2, az = z - 2;
+    int px = ax >> 2, py = ay >> 2, pz = az >> 2;
+    float f[8], fmin = bits2f(0x7F800000u);
+    for (int i = 0; i < 8; ++i) {
+        int m = zoom_corner_m(seed, (i & 4) ? px + 1 : px, (i & 2) ? py + 1 : py, (i & 1) ? pz + 1 : pz);
+        f[i] = (sqf[((az & 3) << 10) + ((i & 1) ? 4096 : 0) + (m >> 20)] + sqf[((ay & 3) << 10) + ((i & 2) ? 4096 : 0) + ((m >> 10) & 1023)]) +
+               sqf[((ax & 3) << 10) + ((i & 4) ? 4096 : 0) + (m & 1023)];
+        fmin = f[i] < fmin ? f[i] : fmin;
+    }
+    int n = 0;
+    for (int i = 0; i < 8; ++i) n += f[i] <= fmin + 8.0e-6f ? 1 : 0;
+    return n;
+}
+
 // Returns the quart (bx, by, bz) BiomeManager.getBiome picks for block (x, y, z).
 MCC_HD MCC_FI void zoom_quart(int64_t seed, int x, int y, int z, int& bx, int& by, int& bz) {
     int ax = x - 2, ay = y - 2, az = z - 2;

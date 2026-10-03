@@ -29,7 +29,7 @@ using SurfaceCtx = mcc::cuda::SurfaceCtx;
 }
 
 #if defined(__CUDACC__)
-#define MCC_RULE_FN __device__ __noinline__
+#define MCC_RULE_FN __device__ __forceinline__
 #else
 #define MCC_RULE_FN inline
 #endif
@@ -63,6 +63,7 @@ struct TerrainTables {
     dev::Positional random, aquifer_random, ore_random, gradient_random[kMaxGradientRandoms];
     int64_t zoom_seed;
     const double* zoom_sq;                         // dev::zoom_square table (8192)
+    const float* zoom_sqf;                         // the same, rounded to float
     int st_surface, st_surface_secondary, st_clay_offset, st_badlands_pillar, st_badlands_roof, st_badlands_surface, st_iceberg_pillar,
         st_iceberg_roof, st_iceberg_surface;
     int aq_min_grid_y, aq_grid_y;                  // aquifer grid (y extent is chunk-independent)
@@ -101,7 +102,7 @@ struct SurfaceCtx {
     }
     __device__ int biome_at(int bx, int by, int bz) const {
         int qx, qy, qz;
-        dev::zoom_quart_tab(c_tt.zoom_seed, c_tt.zoom_sq, bx, by, bz, qx, qy, qz);
+        dev::zoom_quart_fast(c_tt.zoom_seed, c_tt.zoom_sq, c_tt.zoom_sqf, bx, by, bz, qx, qy, qz);
         return quart_biome(qx, qy, qz);
     }
     __device__ double noise_stack(int st, double nx, double ny, double nz) const {
@@ -345,9 +346,37 @@ __global__ void k_biome_chain(int nb, const int64_t* targets, const int32_t* fir
                 }
 }
 
-__global__ void k_zoom_squares(double* sq) {
+__global__ void k_zoom_squares(double* sq, float* sqf) {
     int t = blockIdx.x * blockDim.x + threadIdx.x;
-    if (t < 8192) sq[t] = dev::zoom_square(t);
+    if (t < 8192) {
+        sq[t] = dev::zoom_square(t);
+        sqf[t] = static_cast<float>(sq[t]);
+    }
+}
+
+// Self-test: zoom_quart_fast against the plain FP64 zoom_quart over pseudo-random blocks
+// (half anywhere up to the world border, half near the origin). Counts mismatches and
+// near ties (FP64 fallbacks).
+__global__ void k_zoom_selftest(int64_t seed, uint64_t salt, int64_t count, const double* sq, const float* sqf, unsigned long long* mismatches,
+                                unsigned long long* fallbacks) {
+    int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= count) return;
+    uint64_t h = (static_cast<uint64_t>(i) + salt) * 0x9E3779B97F4A7C15ull;
+    h ^= h >> 31;
+    h *= 0xBF58476D1CE4E5B9ull;
+    h ^= h >> 29;
+    int x = static_cast<int>(static_cast<int64_t>(h % 60000001ull) - 30000000);
+    int z = static_cast<int>(static_cast<int64_t>((h >> 20) % 60000001ull) - 30000000);
+    int y = static_cast<int>((h >> 45) % 400ull) - 72;
+    if (i & 1) {
+        x = static_cast<int>(h % 4096) - 2048;
+        z = static_cast<int>((h >> 12) % 4096) - 2048;
+    }
+    int ax, ay, az, bx, by, bz;
+    dev::zoom_quart(seed, x, y, z, ax, ay, az);
+    dev::zoom_quart_fast(seed, sq, sqf, x, y, z, bx, by, bz);
+    if (ax != bx || ay != by || az != bz) atomicAdd(mismatches, 1ull);
+    if (dev::zoom_fast_candidates(seed, sqf, x, y, z) > 1) atomicAdd(fallbacks, 1ull);
 }
 
 // ---- density ------------------------------------------------------------------------
@@ -676,13 +705,13 @@ __global__ void k_blocks(const ChunkXZ* chunks, int n, const float* corners, con
 __global__ void k_heights(int n, const uint8_t* blocks, int* h0) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= n * 256) return;
-    int c = idx / 256, col = idx % 256;
-    int x = col / 16, z = col % 16;                          // heightmap index x * 16 + z
+    int c = idx / 256, t = idx % 256;
+    int x = t & 15, z = t >> 4;   // adjacent threads read adjacent bytes of a y-layer
     const uint8_t* b = blocks + static_cast<size_t>(c) * c_tt.height * 256;
     int hv = c_tt.min_y;
     for (int yy = c_tt.height - 1; yy >= 0; --yy)
         if (!(c_tt.block_flags[b[(yy * 16 + z) * 16 + x]] & kFlagAir)) { hv = c_tt.min_y + yy + 1; break; }
-    h0[idx] = hv;
+    h0[c * 256 + x * 16 + z] = hv;                           // heightmap index x * 16 + z
 }
 
 }  // namespace
@@ -769,23 +798,27 @@ __global__ void k_surface1(const ChunkXZ* chunks, int n, uint8_t* blocks, const 
                            const float* corners, const int* colmap, int rows, const float* prelim_corners) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= n * 256) return;
-    int ci = idx / 256, col = idx % 256;
+    // Adjacent threads take adjacent x, so the column walks read contiguous bytes of
+    // each y-layer; col is the heightmap index x * 16 + z.
+    int ci = idx / 256, t = idx % 256;
+    int x = t & 15, z = t >> 4;
+    int col = x * 16 + z, hidx = ci * 256 + col;
     const int qper = 16 * (c_tt.height / 4);
     const uint8_t* nb[9];
     for (int k = 0; k < 9; ++k) nb[k] = bbiomes + static_cast<size_t>(nb_index[ci * 9 + k]) * qper;
-    int hm = h0[idx];
+    int hm = h0[hidx];
     SurfaceCtx c;
     init_ctx(c, chunks, ci, col, blocks, &hm, nb, corners, colmap, rows, prelim_corners);
     int bx = c.cx * 16 + c.lx, bz = c.cz * 16 + c.lz;
     int starting = (hm - 1) + 1;
     int surface_biome = c.biome_at(bx, starting, bz);
     if (surface_biome == c_tt.biome_eroded_badlands) eroded_badlands(c, bx, bz, starting);
-    h1[idx] = hm;
+    h1[hidx] = hm;
     if (surface_biome == c_tt.biome_frozen_ocean || surface_biome == c_tt.biome_deep_frozen_ocean) {
         update_xz(c, bx, bz, 0, 0);
         frozen_ocean(c, c.min_surface_level(), surface_biome, bx, bz, starting, false);
     }
-    h2[idx] = hm;
+    h2[hidx] = hm;
 }
 
 // Pass 2: the material-rule walk per column, then the frozen-ocean extension.
@@ -793,11 +826,14 @@ __global__ void k_surface2(const ChunkXZ* chunks, int n, uint8_t* blocks, const 
                            const uint8_t* bbiomes, const float* corners, const int* colmap, int rows, const float* prelim_corners) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= n * 256) return;
-    int ci = idx / 256, col = idx % 256;
+    // Adjacent threads take adjacent x, so the column walks read contiguous bytes of
+    // each y-layer; col is the heightmap index x * 16 + z.
+    int ci = idx / 256, t = idx % 256;
+    int x = t & 15, z = t >> 4;
+    int col = x * 16 + z, hidx = ci * 256 + col;
     const int qper = 16 * (c_tt.height / 4);
     const uint8_t* nb[9];
     for (int k = 0; k < 9; ++k) nb[k] = bbiomes + static_cast<size_t>(nb_index[ci * 9 + k]) * qper;
-    int x = col / 16, z = col % 16;
     // Height of another column as seen when vanilla processes (x, z): columns earlier in
     // the x-major, z-minor loop have finished both extensions; later ones none.
     auto H = [&](int ox, int oz) {
@@ -808,11 +844,11 @@ __global__ void k_surface2(const ChunkXZ* chunks, int n, uint8_t* blocks, const 
         else v = h0[j];
         return v - 1;                                        // ChunkAccess.getHeight
     };
-    int hm = h1[idx];
+    int hm = h1[hidx];
     SurfaceCtx c;
     init_ctx(c, chunks, ci, col, blocks, &hm, nb, corners, colmap, rows, prelim_corners);
     int bx = c.cx * 16 + x, bz = c.cz * 16 + z;
-    int starting = (h0[idx] - 1) + 1;
+    int starting = (h0[hidx] - 1) + 1;
     int surface_biome = c.biome_at(bx, starting, bz);
     int height = H(x, z) + 1;
     int gx = H(min(x + 1, 15), z) - H(max(x - 1, 0), z);
@@ -882,6 +918,7 @@ struct FullTerrainGenerator::Impl {
     int sl = 0;                    // axis-site layers (AxisRec records per coordinate)
     AxisLayer* d_axis_layers = nullptr;
     double* d_zoom_sq = nullptr;
+    float* d_zoom_sqf = nullptr;
     std::unique_ptr<Dedupe> grid_dedupe, col_dedupe;
     uint64_t *d_col_keys = nullptr, *d_col_unique = nullptr;
     int *d_colmap = nullptr, *d_col_count = nullptr;
@@ -925,7 +962,8 @@ struct FullTerrainGenerator::Impl {
         for (auto& e : ev) cudaEventCreate(&e);
         check(cudaDeviceSetLimit(cudaLimitStackSize, 16 * 1024), "stack limit");
         check(cudaMalloc(&d_zoom_sq, sizeof(double) * 8192), "malloc zoom table");
-        k_zoom_squares<<<32, 256>>>(d_zoom_sq);
+        check(cudaMalloc(&d_zoom_sqf, sizeof(float) * 8192), "malloc zoom table");
+        k_zoom_squares<<<32, 256>>>(d_zoom_sq, d_zoom_sqf);
         check(cudaGetLastError(), "zoom table");
         if (tm.palette.size() > 64 || tm.biomes.size() > 128) throw std::runtime_error("palette/biome tables too large");
     }
@@ -933,7 +971,7 @@ struct FullTerrainGenerator::Impl {
     ~Impl() {
         void* ptrs[] = {d_octaves, d_layers, d_tree, d_tree_children, d_leaf_biome, d_leaf_node, d_chunks, d_bchunks, d_nb, d_bcol, d_targets, d_mindist,
                         d_firstmin, d_bbiomes, d_col, d_corners, d_grid, d_prelim, d_skip, d_cells, d_blocks, d_h0, d_h1, d_h2,
-                        d_axis_layers, d_axis_x, d_axis_y, d_axis_z, d_zoom_sq, d_grid_keys, d_grid_unique, d_grid_map, d_grid_count,
+                        d_axis_layers, d_axis_x, d_axis_y, d_axis_z, d_zoom_sq, d_zoom_sqf, d_grid_keys, d_grid_unique, d_grid_map, d_grid_count,
                         d_grid_vals, d_col_keys, d_col_unique, d_colmap, d_col_count};
         for (void* p : ptrs) cudaFree(p);
         for (auto& e : ev) cudaEventDestroy(e);
@@ -1051,6 +1089,7 @@ struct FullTerrainGenerator::Impl {
         }
         tt.zoom_seed = seed->zoom_seed;
         tt.zoom_sq = d_zoom_sq;
+        tt.zoom_sqf = d_zoom_sqf;
         auto st = [&](const char* k) {
             for (int i = 0; i < gen::kNumNoises; ++i)
                 if (std::string(gen::kNoiseKeys[i]) == k) return i;
@@ -1172,6 +1211,30 @@ void FullTerrainGenerator::generate(const ChunkXZ* chunks, int count, uint8_t* t
                          aquifer_out ? aquifer_out + static_cast<size_t>(off) * impl_->per : nullptr, timing);
     }
     if (timing) timing->wall_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+}
+
+ZoomSelfTest zoom_selftest(int64_t world_seed, int64_t count) {
+    double* sq = nullptr;
+    float* sqf = nullptr;
+    unsigned long long* counters = nullptr;
+    check(cudaMalloc(&sq, sizeof(double) * 8192), "malloc");
+    check(cudaMalloc(&sqf, sizeof(float) * 8192), "malloc");
+    check(cudaMalloc(&counters, sizeof(unsigned long long) * 2), "malloc");
+    check(cudaMemset(counters, 0, sizeof(unsigned long long) * 2), "memset");
+    k_zoom_squares<<<32, 256>>>(sq, sqf);
+    const int64_t zoom_seed = biome_zoom_seed(world_seed);
+    const int64_t step = int64_t{1} << 26;
+    for (int64_t off = 0; off < count; off += step) {
+        int64_t n = std::min(step, count - off);
+        k_zoom_selftest<<<static_cast<unsigned>((n + 255) / 256), 256>>>(zoom_seed, static_cast<uint64_t>(off), n, sq, sqf, counters, counters + 1);
+    }
+    check(cudaGetLastError(), "zoom self-test");
+    unsigned long long h[2];
+    check(cudaMemcpy(h, counters, sizeof h, cudaMemcpyDeviceToHost), "download");
+    cudaFree(sq);
+    cudaFree(sqf);
+    cudaFree(counters);
+    return {count, static_cast<int64_t>(h[0]), static_cast<int64_t>(h[1])};
 }
 
 uint8_t* alloc_pinned(size_t bytes) {

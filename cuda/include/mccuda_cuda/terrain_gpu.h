@@ -37,6 +37,12 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
+// Device self-test of the FP32-filtered BiomeManager zoom against the plain FP64 one.
+struct ZoomSelfTest {
+    int64_t checked, mismatches, fallbacks;   // fallbacks: near ties resolved with FP64
+};
+ZoomSelfTest zoom_selftest(int64_t world_seed, int64_t count);
+
 // Page-locked host memory (faster device-to-host copies for terrain_out).
 uint8_t* alloc_pinned(size_t bytes);
 void free_pinned(void* p);

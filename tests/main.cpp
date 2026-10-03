@@ -12,6 +12,7 @@
 #include "mccuda/ir.h"
 #include "mccuda/volume_eval.h"
 #include "mccuda_cuda/generator.h"
+#include "mccuda_cuda/terrain_gpu.h"
 #include "tests.h"
 
 #ifndef MCCUDA_DATA_DIR
@@ -41,7 +42,7 @@ std::vector<Impl> mcc::test::implementations(const IR& ir) {
 
 int main(int argc, char** argv) {
     std::string data = MCCUDA_DATA_DIR, set_name = "quick", impl_name = "all";
-    std::set<std::string> only = {"unit", "rng", "noise", "named", "chunks", "terrain"};
+    std::set<std::string> only = {"unit", "rng", "noise", "named", "chunks", "terrain", "zoom"};
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         auto next = [&]() -> std::string { if (i + 1 >= argc) throw std::runtime_error("missing value for " + a); return argv[++i]; };
@@ -73,6 +74,20 @@ int main(int argc, char** argv) {
                 int bad = cuda::debug_compare_generated(ir, t, c.cx, c.cz);
                 if (bad) { ok = false; break; }
             }
+        }
+        if (only.count("zoom")) {
+            // GPU zoom (FP32 filter + FP64 near-tie fallback) vs the plain FP64 BiomeManager zoom.
+            std::printf("[zoom] FP32-filtered BiomeManager zoom vs FP64 reference, random blocks\n");
+            int64_t checked = 0, bad = 0, fb = 0;
+            for (const OracleSeed& s : set.seeds) {
+                cuda::ZoomSelfTest r = cuda::zoom_selftest(s.seed, set_name == "quick" ? (int64_t{1} << 24) : (int64_t{1} << 26));
+                checked += r.checked;
+                bad += r.mismatches;
+                fb += r.fallbacks;
+            }
+            std::printf("  zoom fast path                     %s  (%lld checked, %lld mismatches; %lld near ties took the FP64 path)\n",
+                        bad == 0 ? "PASS" : "FAIL", static_cast<long long>(checked), static_cast<long long>(bad), static_cast<long long>(fb));
+            ok &= bad == 0;
         }
         if (only.count("named")) ok &= run_named_functions(ir, set);
         if (only.count("chunks")) {

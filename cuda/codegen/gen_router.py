@@ -350,8 +350,9 @@ class Gen:
             xzm = 684.412 * f64(n['xz_scale'])
             ym = 684.412 * f64(n['y_scale'])
             L.append('const mcc::BlendedRef& b = T.blended[%d];' % bi)
-            L.append('const double xzm = %s, ym = %s;' % (dlit_v(xzm), dlit_v(ym)))
-            L.append('const double mxz = xzm / %s, my = ym / %s;' % (dlit(n['xz_factor']), dlit(n['y_factor'])))
+            if not (vol and ctx.axis):
+                L.append('const double xzm = %s, ym = %s;' % (dlit_v(xzm), dlit_v(ym)))
+                L.append('const double mxz = xzm / %s, my = ym / %s;' % (dlit(n['xz_factor']), dlit(n['y_factor'])))
             if vol and ctx.axis:
                 scales = {'mxz': xzm / f64(n['xz_factor']), 'my': ym / f64(n['y_factor']), 'xzm': xzm, 'ym': ym}
                 kinds = {'main': 1, 'min_limit': 2, 'max_limit': 3}

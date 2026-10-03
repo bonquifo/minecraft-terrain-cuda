@@ -23,7 +23,7 @@ if(MSVC)
 endif()
 add_compile_options($<$<COMPILE_LANGUAGE:CUDA>:-fmad=false> $<$<COMPILE_LANGUAGE:CUDA>:-ftz=false>
                     $<$<COMPILE_LANGUAGE:CUDA>:-prec-div=true> $<$<COMPILE_LANGUAGE:CUDA>:-prec-sqrt=true>
-                    $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/fp:precise> $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/utf-8>
+                    $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/fp:precise> $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/utf-8> $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/Zc:preprocessor>
                     $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>)
 
 set(MCCUDA_DATA_DIR "${CMAKE_SOURCE_DIR}/data" CACHE PATH "Oracle/game data directory (gitignored)")

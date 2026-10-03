@@ -18,6 +18,7 @@
 #include "mccuda/volume_eval.h"
 #include "mccuda_cuda/router_tables.h"
 #include "mccuda_cuda/terrain_device.h"
+#include "dedupe.cuh"
 
 namespace mcc::cuda {
 struct SurfaceCtx;
@@ -78,8 +79,9 @@ struct SurfaceCtx {
     uint8_t* blocks;           // this chunk's blocks
     int* hm;                   // this column's live heightmap value (getFirstAvailable)
     const uint8_t* const* nb;  // 9 biome arrays (3x3 neighbourhood)
-    const float* corners;      // channel corners of this chunk
-    int corner_chunk, rows;
+    const float* corners;      // channel corners per distinct corner column
+    const int* cmap;           // this chunk's 25 corner columns -> distinct column index
+    int rows;
     float prelim;
     // per column / block context
     int x, y, z;
@@ -143,8 +145,8 @@ struct SurfaceCtx {
             double large = static_cast<double>(fv * 7.0f);
             double edge = static_cast<double>(dev::simplex_get(c_tt.biome_info, static_cast<double>(bx) * 0.2, static_cast<double>(bz) * 0.2));
             if (large + edge < 0.3) {
-                double small = static_cast<double>(dev::simplex_get(c_tt.biome_info, static_cast<double>(bx) * 0.09, static_cast<double>(bz) * 0.09));
-                if (small < 0.8) adjusted = 0.2f;
+                double small_patch = static_cast<double>(dev::simplex_get(c_tt.biome_info, static_cast<double>(bx) * 0.09, static_cast<double>(bz) * 0.09));
+                if (small_patch < 0.8) adjusted = 0.2f;
             }
         }
         int snow_level = c_tt.sea_level + 17;
@@ -200,19 +202,24 @@ constexpr int kAllChannels = gen::kNumChannels + gen::kNumOreChannels;
 static_assert(kAllChannels <= 16, "SurfaceCtx::ore_ch too small");
 constexpr int kCols = 25;
 
-__device__ __forceinline__ void interp_channels(const float* corners, int c, int rows, int x, int yy, int z, int first, int count, float* out) {
+// Corner values live per distinct corner column u: corners[(u * kAllChannels + ch) * rows + row];
+// cmap holds a chunk's 25 column indices (row-major 5 x 5).
+__device__ __forceinline__ void interp_channels(const float* corners, const int* cmap, int rows, int x, int yy, int z, int first, int count, float* out) {
     int cx = x >> 2, xi = x & 3, cz = z >> 2, zi = z & 3, cy = yy >> 3, yi = yy & 7;
+    const size_t u00 = cmap[cz * 5 + cx], u10 = cmap[cz * 5 + cx + 1], u01 = cmap[(cz + 1) * 5 + cx], u11 = cmap[(cz + 1) * 5 + cx + 1];
     for (int k = 0; k < count; ++k) {
-        const float* b = corners + (static_cast<size_t>(c) * kAllChannels + first + k) * kCols * rows;
-        const int c00 = (cz * 5 + cx) * rows, c10 = (cz * 5 + cx + 1) * rows, c01 = ((cz + 1) * 5 + cx) * rows, c11 = ((cz + 1) * 5 + cx + 1) * rows;
-        out[k] = interp_fill(b[c00 + cy], b[c10 + cy], b[c00 + cy + 1], b[c10 + cy + 1], b[c01 + cy], b[c11 + cy], b[c01 + cy + 1], b[c11 + cy + 1],
-                             xi, yi, zi, 0, 0.25f, 0.125f);
+        const int ch = first + k;
+        const float* b00 = corners + (u00 * kAllChannels + ch) * rows;
+        const float* b10 = corners + (u10 * kAllChannels + ch) * rows;
+        const float* b01 = corners + (u01 * kAllChannels + ch) * rows;
+        const float* b11 = corners + (u11 * kAllChannels + ch) * rows;
+        out[k] = interp_fill(b00[cy], b10[cy], b00[cy + 1], b10[cy + 1], b01[cy], b11[cy], b01[cy + 1], b11[cy + 1], xi, yi, zi, 0, 0.25f, 0.125f);
     }
 }
 
 __device__ int SurfaceCtx::ore_vein(int k) {
     if (!ore_set) {
-        interp_channels(corners, corner_chunk, rows, lx, y - c_tt.min_y, lz, 0, kAllChannels, ore_ch);
+        interp_channels(corners, cmap, rows, lx, y - c_tt.min_y, lz, 0, kAllChannels, ore_ch);
         ore_set = true;
     }
     float density = gen::eval_ore(c_tt.rt, x, y, z, ore_ch, 2 * k);
@@ -345,11 +352,27 @@ __global__ void k_zoom_squares(double* sq) {
 
 // ---- density ------------------------------------------------------------------------
 
-__global__ void k_columns(const ChunkXZ* chunks, int n, float* col) {
+// Corner columns: 25 per chunk, shared between neighbours; deduplicated by
+// key = (qx + 2^30) << 31 | (qz + 2^30) on the quart lattice.
+__global__ void k_col_keys(const ChunkXZ* chunks, int n, uint64_t* keys) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= n * kCols) return;
     int c = idx / kCols, k = idx % kCols;
-    gen::eval_columns(c_tt.rt, chunks[c].x * 16 + (k % 5) * 4, chunks[c].z * 16 + (k / 5) * 4, col + static_cast<size_t>(idx) * gen::kNumColumns);
+    int qx = chunks[c].x * 4 + k % 5, qz = chunks[c].z * 4 + k / 5;
+    keys[idx] = (static_cast<uint64_t>(qx + (1 << 30)) << 31) | static_cast<uint64_t>(qz + (1 << 30));
+}
+
+__device__ __forceinline__ void col_xz(uint64_t key, int& x, int& z) {
+    x = (static_cast<int>((key >> 31) & 0x7FFFFFFFull) - (1 << 30)) * 4;
+    z = (static_cast<int>(key & 0x7FFFFFFFull) - (1 << 30)) * 4;
+}
+
+__global__ void k_columns(int upper, const uint64_t* ucols, const int* count, float* col) {
+    int u = blockIdx.x * blockDim.x + threadIdx.x;
+    if (u >= upper || u >= *count) return;
+    int x, z;
+    col_xz(ucols[u], x, z);
+    gen::eval_columns(c_tt.rt, x, z, col + static_cast<size_t>(u) * gen::kNumColumns);
 }
 
 // Per-layer constants of the axis sites (gen::kAxisSites), in AxisRec table order.
@@ -359,51 +382,82 @@ struct AxisLayer {
     int smeared;
 };
 
-// x and z coordinate records of every axis-site layer for the 5 corner columns per
-// axis of each chunk: ax/az[(c * 5 + k) * sl + j].
-__global__ void k_axis_xz(const ChunkXZ* chunks, int n, const AxisLayer* layers, int sl, AxisRec* ax, AxisRec* az) {
+// x and z coordinate records of every axis-site layer per distinct corner column:
+// ax/az[u * sl + j].
+__global__ void k_axis_xz(int upper, const uint64_t* ucols, const int* count, const AxisLayer* layers, int sl, AxisRec* ax, AxisRec* az) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= n * 5 * sl) return;
-    int j = idx % sl, k = (idx / sl) % 5, c = idx / (5 * sl);
+    if (idx >= upper * sl) return;
+    int u = idx / sl, j = idx % sl;
+    if (u >= *count) return;
+    int x, z;
+    col_xz(ucols[u], x, z);
     const AxisLayer& L = layers[j];
-    ax[idx] = axis_plain(chunks[c].x * 16 + 4 * k, L.xs, L.ox);
-    az[idx] = axis_plain(chunks[c].z * 16 + 4 * k, L.xs, L.oz);
+    ax[idx] = axis_plain(x, L.xs, L.ox);
+    az[idx] = axis_plain(z, L.xs, L.oz);
 }
 
-__global__ void k_corners(const ChunkXZ* chunks, int n, const float* col, float* corners, int rows, const AxisRec* axis_x, const AxisRec* axis_y,
-                          const AxisRec* axis_z, int sl) {
+__global__ void k_corners(int upper, const uint64_t* ucols, const int* count, const float* col, float* corners, int rows, const AxisRec* axis_x,
+                          const AxisRec* axis_y, const AxisRec* axis_z, int sl) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= n * kCols * rows) return;
-    int row = idx % rows, k = (idx / rows) % kCols, c = idx / (rows * kCols);
-    int kx = k % 5, kz = k / 5;
-    int x = chunks[c].x * 16 + kx * 4, z = chunks[c].z * 16 + kz * 4, y = c_tt.min_y + row * 8;
-    const float* cv = col + (static_cast<size_t>(c) * kCols + k) * gen::kNumColumns;
-    const AxisRec* ax = axis_x + (static_cast<size_t>(c) * 5 + kx) * sl;
-    const AxisRec* az = axis_z + (static_cast<size_t>(c) * 5 + kz) * sl;
+    if (idx >= upper * rows) return;
+    int u = idx / rows, row = idx % rows;
+    if (u >= *count) return;
+    int x, z;
+    col_xz(ucols[u], x, z);
+    int y = c_tt.min_y + row * 8;
+    const float* cv = col + static_cast<size_t>(u) * gen::kNumColumns;
+    const AxisRec* ax = axis_x + static_cast<size_t>(u) * sl;
+    const AxisRec* az = axis_z + static_cast<size_t>(u) * sl;
     const AxisRec* ay = axis_y + static_cast<size_t>(row) * sl;
     float out[kAllChannels];
     gen::eval_corners_tab(c_tt.rt, x, y, z, cv, ax, ay, az, out);
     if (gen::kNumOreChannels > 0) gen::eval_ore_corners_tab(c_tt.rt, x, y, z, cv, ax, ay, az, out + gen::kNumChannels);
-    for (int ch = 0; ch < kAllChannels; ++ch) corners[((static_cast<size_t>(c) * kAllChannels + ch) * kCols + k) * rows + row] = out[ch];
+    for (int ch = 0; ch < kAllChannels; ++ch) corners[(static_cast<size_t>(u) * kAllChannels + ch) * rows + row] = out[ch];
 }
 
 // ---- surface-level grid (aquifer) and preliminary surface corners -----------------------
-__global__ void k_surface_grid(const ChunkXZ* chunks, int n, int32_t* grid, float* prelim_corners) {
+// Per chunk, 513 aquifer surface-level cells (27 x 19 quarts) plus the 4 chunk corners
+// of chunk_surface_level. Neighbouring chunks share most of them, so the keys are
+// deduplicated and each distinct (quart, semantics) is evaluated once.
+constexpr int kGridKeys = kGridCells + 4;
+
+// key = vol << 62 | (qx + 2^30) << 31 | (qz + 2^30)
+__device__ __forceinline__ uint64_t grid_key(bool vol, int qx, int qz) {
+    return (static_cast<uint64_t>(vol) << 62) | (static_cast<uint64_t>(qx + (1 << 30)) << 31) | static_cast<uint64_t>(qz + (1 << 30));
+}
+
+__global__ void k_grid_keys(const ChunkXZ* chunks, int n, uint64_t* keys) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    const int per = kGridCells + 4;
-    if (idx >= n * per) return;
-    int c = idx / per, e = idx % per;
+    if (idx >= n * kGridKeys) return;
+    int c = idx / kGridKeys, e = idx % kGridKeys;
     int cx = chunks[c].x, cz = chunks[c].z;
     if (e < kGridCells) {
         int qx = 4 * cx - 16 + e % kGridX, qz = 4 * cz - 8 + e / kGridX;
         // Positions inside NoiseBasedAquifer's constructor prefill use the volume path.
         bool prefill = qx >= 4 * cx - 4 && qx <= 4 * cx + 6 && qz >= 4 * cz - 4 && qz <= 4 * cz + 6;
-        float v = prefill ? gen::fts_volume(c_tt.rt, qx * 4, qz * 4) : gen::fts_point(c_tt.rt, qx * 4, qz * 4);
-        grid[static_cast<size_t>(c) * kGridCells + e] = mth_floor(static_cast<double>(v));
+        keys[idx] = grid_key(prefill, qx, qz);
     } else {
-        int k = e - kGridCells;
-        prelim_corners[static_cast<size_t>(c) * 4 + k] = gen::fts_volume(c_tt.rt, cx * 16 + (k & 1) * 16, cz * 16 + (k >> 1) * 16);
+        int k = e - kGridCells;   // chunk_surface_level corner: volume path at (16cx + 16(k & 1), 16cz + 16(k >> 1))
+        keys[idx] = grid_key(true, 4 * cx + 4 * (k & 1), 4 * cz + 4 * (k >> 1));
     }
+}
+
+__global__ void k_fts_unique(int upper, const uint64_t* unique, const int* count, float* values) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= upper || idx >= *count) return;
+    uint64_t key = unique[idx];
+    bool vol = (key >> 62) != 0;
+    int qx = static_cast<int>((key >> 31) & 0x7FFFFFFFull) - (1 << 30), qz = static_cast<int>(key & 0x7FFFFFFFull) - (1 << 30);
+    values[idx] = vol ? gen::fts_volume(c_tt.rt, qx * 4, qz * 4) : gen::fts_point(c_tt.rt, qx * 4, qz * 4);
+}
+
+__global__ void k_grid_scatter(int n, const int* map, const float* values, int32_t* grid, float* prelim_corners) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n * kGridKeys) return;
+    int c = idx / kGridKeys, e = idx % kGridKeys;
+    float v = values[map[idx]];
+    if (e < kGridCells) grid[static_cast<size_t>(c) * kGridCells + e] = mth_floor(static_cast<double>(v));
+    else prelim_corners[static_cast<size_t>(c) * 4 + (e - kGridCells)] = v;
 }
 
 // ---- aquifer -----------------------------------------------------------------------
@@ -559,7 +613,7 @@ __device__ int aquifer_substance(int cx, int cz, const int4* cells, size_t cell_
     if (fs_at(global, y) == c_tt.lava) return c_tt.lava;
     int xa = (x - 5) >> 4, ya = grid_y(y + 1), za = (z - 5) >> 4;
     int d1 = INT_MAX, d2 = INT_MAX, d3 = INT_MAX, d4 = INT_MAX;
-    int i1 = 0, i2 = 0, i3 = 0, i4 = 0;
+    int i1 = 0, i2 = 0, i3 = 0;   // vanilla also tracks a 4th nearest index, which it never reads
     for (int ox = 0; ox <= 1; ++ox)
         for (int oy = -1; oy <= 1; ++oy)
             for (int oz = 0; oz <= 1; ++oz) {
@@ -568,12 +622,12 @@ __device__ int aquifer_substance(int cx, int cz, const int4* cells, size_t cell_
                 int4 loc = cells[cell_base + index];
                 int dx = loc.x - x, dy = loc.y - y, dz = loc.z - z;
                 int nd = dx * dx + dy * dy + dz * dz;
-                if (d1 >= nd) { i4 = i3; i3 = i2; i2 = i1; i1 = index; d4 = d3; d3 = d2; d2 = d1; d1 = nd; }
-                else if (d2 >= nd) { i4 = i3; i3 = i2; i2 = index; d4 = d3; d3 = d2; d2 = nd; }
-                else if (d3 >= nd) { i4 = i3; i3 = index; d4 = d3; d3 = nd; }
-                else if (d4 >= nd) { i4 = index; d4 = nd; }
+                if (d1 >= nd) { i3 = i2; i2 = i1; i1 = index; d4 = d3; d3 = d2; d2 = d1; d1 = nd; }
+                else if (d2 >= nd) { i3 = i2; i2 = index; d4 = d3; d3 = d2; d2 = nd; }
+                else if (d3 >= nd) { i3 = index; d4 = d3; d3 = nd; }
+                else if (d4 >= nd) { d4 = nd; }
             }
-    (void)i4; (void)d4;
+    (void)d4;
     auto status = [&](int index) { int4 s = cells[status_base + index]; return FluidStatus{s.x, s.y}; };
     FluidStatus s1 = status(i1);
     double sim12 = 1.0 - static_cast<double>(d2 - d1) / 25.0;
@@ -599,7 +653,7 @@ __device__ int aquifer_substance(int cx, int cz, const int4* cells, size_t cell_
     return fluid;
 }
 
-__global__ void k_blocks(const ChunkXZ* chunks, int n, const float* corners, int rows, const int4* cells, const int* skip_above, float* density,
+__global__ void k_blocks(const ChunkXZ* chunks, int n, const float* corners, const int* colmap, int rows, const int4* cells, const int* skip_above, float* density,
                          uint8_t* blocks) {
     const int h = c_tt.height;
     const size_t per = static_cast<size_t>(h) * 256;
@@ -609,7 +663,7 @@ __global__ void k_blocks(const ChunkXZ* chunks, int n, const float* corners, int
     int i = static_cast<int>(idx % per);
     int x = i & 15, z = (i >> 4) & 15, yy = i >> 8;
     float ch[gen::kNumChannels];
-    interp_channels(corners, c, rows, x, yy, z, 0, gen::kNumChannels, ch);
+    interp_channels(corners, colmap + static_cast<size_t>(c) * kCols, rows, x, yy, z, 0, gen::kNumChannels, ch);
     int bx = chunks[c].x * 16 + x, by = c_tt.min_y + yy, bz = chunks[c].z * 16 + z;
     float d = gen::eval_block(c_tt.rt, bx, by, bz, ch);
     if (density) density[idx] = d;
@@ -685,14 +739,14 @@ __device__ void frozen_ocean(SurfaceCtx& c, int min_surface, int biome, int bx, 
 }
 
 __device__ void init_ctx(SurfaceCtx& c, const ChunkXZ* chunks, int ci, int col, uint8_t* blocks, int* hm_live, const uint8_t* const* nb, const float* corners,
-                         int rows, const float* prelim_corners) {
+                         const int* colmap, int rows, const float* prelim_corners) {
     c.cx = chunks[ci].x; c.cz = chunks[ci].z;
     c.lx = col / 16; c.lz = col % 16;
     c.blocks = blocks + static_cast<size_t>(ci) * c_tt.height * 256;
     c.hm = hm_live;
     c.nb = nb;
     c.corners = corners;
-    c.corner_chunk = ci;
+    c.cmap = colmap + static_cast<size_t>(ci) * kCols;
     c.rows = rows;
     const float* pc = prelim_corners + static_cast<size_t>(ci) * 4;
     // chunk_surface_level: InterpolatedFunction(16 x 1) over the 4 chunk corners.
@@ -712,7 +766,7 @@ __device__ void update_xz(SurfaceCtx& c, int bx, int bz, int gx, int gz) {
 // Pass 1: eroded-badlands extension (writes) and the heights each column reaches
 // after its badlands extension (h1) and after its frozen-ocean extension (h2).
 __global__ void k_surface1(const ChunkXZ* chunks, int n, uint8_t* blocks, const int* h0, int* h1, int* h2, const int* nb_index, const uint8_t* bbiomes,
-                           const float* corners, int rows, const float* prelim_corners) {
+                           const float* corners, const int* colmap, int rows, const float* prelim_corners) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= n * 256) return;
     int ci = idx / 256, col = idx % 256;
@@ -721,7 +775,7 @@ __global__ void k_surface1(const ChunkXZ* chunks, int n, uint8_t* blocks, const 
     for (int k = 0; k < 9; ++k) nb[k] = bbiomes + static_cast<size_t>(nb_index[ci * 9 + k]) * qper;
     int hm = h0[idx];
     SurfaceCtx c;
-    init_ctx(c, chunks, ci, col, blocks, &hm, nb, corners, rows, prelim_corners);
+    init_ctx(c, chunks, ci, col, blocks, &hm, nb, corners, colmap, rows, prelim_corners);
     int bx = c.cx * 16 + c.lx, bz = c.cz * 16 + c.lz;
     int starting = (hm - 1) + 1;
     int surface_biome = c.biome_at(bx, starting, bz);
@@ -736,7 +790,7 @@ __global__ void k_surface1(const ChunkXZ* chunks, int n, uint8_t* blocks, const 
 
 // Pass 2: the material-rule walk per column, then the frozen-ocean extension.
 __global__ void k_surface2(const ChunkXZ* chunks, int n, uint8_t* blocks, const int* h0, const int* h1, const int* h2, const int* nb_index,
-                           const uint8_t* bbiomes, const float* corners, int rows, const float* prelim_corners) {
+                           const uint8_t* bbiomes, const float* corners, const int* colmap, int rows, const float* prelim_corners) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= n * 256) return;
     int ci = idx / 256, col = idx % 256;
@@ -756,7 +810,7 @@ __global__ void k_surface2(const ChunkXZ* chunks, int n, uint8_t* blocks, const 
     };
     int hm = h1[idx];
     SurfaceCtx c;
-    init_ctx(c, chunks, ci, col, blocks, &hm, nb, corners, rows, prelim_corners);
+    init_ctx(c, chunks, ci, col, blocks, &hm, nb, corners, colmap, rows, prelim_corners);
     int bx = c.cx * 16 + x, bz = c.cz * 16 + z;
     int starting = (h0[idx] - 1) + 1;
     int surface_biome = c.biome_at(bx, starting, bz);
@@ -828,6 +882,12 @@ struct FullTerrainGenerator::Impl {
     int sl = 0;                    // axis-site layers (AxisRec records per coordinate)
     AxisLayer* d_axis_layers = nullptr;
     double* d_zoom_sq = nullptr;
+    std::unique_ptr<Dedupe> grid_dedupe, col_dedupe;
+    uint64_t *d_col_keys = nullptr, *d_col_unique = nullptr;
+    int *d_colmap = nullptr, *d_col_count = nullptr;
+    uint64_t *d_grid_keys = nullptr, *d_grid_unique = nullptr;
+    int *d_grid_map = nullptr, *d_grid_count = nullptr;
+    float* d_grid_vals = nullptr;
     AxisRec *d_axis_x = nullptr, *d_axis_y = nullptr, *d_axis_z = nullptr;
     cudaEvent_t ev[9];
 
@@ -840,6 +900,19 @@ struct FullTerrainGenerator::Impl {
         check(cudaMalloc(&d_col, sizeof(float) * mb * kCols * std::max(gen::kNumColumns, 1)), "malloc");
         check(cudaMalloc(&d_corners, sizeof(float) * mb * kCols * rows * kAllChannels), "malloc");
         check(cudaMalloc(&d_grid, sizeof(int32_t) * mb * kGridCells), "malloc");
+        const size_t gk = static_cast<size_t>(mb) * kGridKeys;
+        check(cudaMalloc(&d_grid_keys, sizeof(uint64_t) * gk), "malloc");
+        check(cudaMalloc(&d_grid_unique, sizeof(uint64_t) * gk), "malloc");
+        check(cudaMalloc(&d_grid_map, sizeof(int) * gk), "malloc");
+        check(cudaMalloc(&d_grid_vals, sizeof(float) * gk), "malloc");
+        check(cudaMalloc(&d_grid_count, sizeof(int)), "malloc");
+        grid_dedupe = std::make_unique<Dedupe>(static_cast<int>(gk), 63);
+        const size_t ck = static_cast<size_t>(mb) * kCols;
+        check(cudaMalloc(&d_col_keys, sizeof(uint64_t) * ck), "malloc");
+        check(cudaMalloc(&d_col_unique, sizeof(uint64_t) * ck), "malloc");
+        check(cudaMalloc(&d_colmap, sizeof(int) * ck), "malloc");
+        check(cudaMalloc(&d_col_count, sizeof(int)), "malloc");
+        col_dedupe = std::make_unique<Dedupe>(static_cast<int>(ck), 62);
         check(cudaMalloc(&d_prelim, sizeof(float) * mb * 4), "malloc");
         check(cudaMalloc(&d_skip, sizeof(int) * mb), "malloc");
         int aq_min = floor_div(ir.min_y + 1, 12) - 1, aq_max = floor_div(ir.min_y + ir.height - 1 + 1, 12) + 1;
@@ -860,7 +933,8 @@ struct FullTerrainGenerator::Impl {
     ~Impl() {
         void* ptrs[] = {d_octaves, d_layers, d_tree, d_tree_children, d_leaf_biome, d_leaf_node, d_chunks, d_bchunks, d_nb, d_bcol, d_targets, d_mindist,
                         d_firstmin, d_bbiomes, d_col, d_corners, d_grid, d_prelim, d_skip, d_cells, d_blocks, d_h0, d_h1, d_h2,
-                        d_axis_layers, d_axis_x, d_axis_y, d_axis_z, d_zoom_sq};
+                        d_axis_layers, d_axis_x, d_axis_y, d_axis_z, d_zoom_sq, d_grid_keys, d_grid_unique, d_grid_map, d_grid_count,
+                        d_grid_vals, d_col_keys, d_col_unique, d_colmap, d_col_count};
         for (void* p : ptrs) cudaFree(p);
         for (auto& e : ev) cudaEventDestroy(e);
     }
@@ -918,8 +992,8 @@ struct FullTerrainGenerator::Impl {
         upload(d_axis_y, ytab);
         cudaFree(d_axis_x);
         cudaFree(d_axis_z);
-        check(cudaMalloc(&d_axis_x, sizeof(AxisRec) * static_cast<size_t>(max_batch) * 5 * std::max(sl, 1)), "malloc axis x");
-        check(cudaMalloc(&d_axis_z, sizeof(AxisRec) * static_cast<size_t>(max_batch) * 5 * std::max(sl, 1)), "malloc axis z");
+        check(cudaMalloc(&d_axis_x, sizeof(AxisRec) * static_cast<size_t>(max_batch) * kCols * std::max(sl, 1)), "malloc axis x");
+        check(cudaMalloc(&d_axis_z, sizeof(AxisRec) * static_cast<size_t>(max_batch) * kCols * std::max(sl, 1)), "malloc axis z");
     }
 
     void set_seed(int64_t s) {
@@ -1032,25 +1106,32 @@ struct FullTerrainGenerator::Impl {
         k_biome_chain<<<grid(nbk, tb), tb>>>(nbk, d_targets, d_firstmin, d_mindist, d_bbiomes);
         check(cudaGetLastError(), "biome kernels");
         cudaEventRecord(ev[2]);
-        k_columns<<<grid(static_cast<size_t>(n) * kCols, tb), tb>>>(d_chunks, n, d_col);
-        k_axis_xz<<<grid(static_cast<size_t>(n) * 5 * sl, tb), tb>>>(d_chunks, n, d_axis_layers, sl, d_axis_x, d_axis_z);
-        k_corners<<<grid(static_cast<size_t>(n) * kCols * rows, tb), tb>>>(d_chunks, n, d_col, d_corners, rows, d_axis_x, d_axis_y, d_axis_z, sl);
+        const int ck = n * kCols;   // upper bound of distinct corner columns
+        k_col_keys<<<grid(ck, tb), tb>>>(d_chunks, n, d_col_keys);
+        col_dedupe->run(d_col_keys, ck, d_col_unique, d_colmap, d_col_count);
+        k_columns<<<grid(ck, tb), tb>>>(ck, d_col_unique, d_col_count, d_col);
+        k_axis_xz<<<grid(static_cast<size_t>(ck) * sl, tb), tb>>>(ck, d_col_unique, d_col_count, d_axis_layers, sl, d_axis_x, d_axis_z);
+        k_corners<<<grid(static_cast<size_t>(ck) * rows, tb), tb>>>(ck, d_col_unique, d_col_count, d_col, d_corners, rows, d_axis_x, d_axis_y, d_axis_z, sl);
         check(cudaGetLastError(), "noise kernels");
         cudaEventRecord(ev[3]);
-        k_surface_grid<<<grid(static_cast<size_t>(n) * (kGridCells + 4), tb), tb>>>(d_chunks, n, d_grid, d_prelim);
+        const int gk = n * kGridKeys;
+        k_grid_keys<<<grid(gk, tb), tb>>>(d_chunks, n, d_grid_keys);
+        grid_dedupe->run(d_grid_keys, gk, d_grid_unique, d_grid_map, d_grid_count);
+        k_fts_unique<<<grid(gk, tb), tb>>>(gk, d_grid_unique, d_grid_count, d_grid_vals);
+        k_grid_scatter<<<grid(gk, tb), tb>>>(n, d_grid_map, d_grid_vals, d_grid, d_prelim);
         k_aquifer_skip<<<grid(n, tb), tb>>>(n, d_grid, d_skip);
         int cell_per = 9 * (floor_div(ir.min_y + ir.height, 12) + 1 - (floor_div(ir.min_y + 1, 12) - 1) + 1);
         k_aquifer_cells<<<grid(static_cast<size_t>(n) * cell_per, tb), tb>>>(d_chunks, n, d_grid, d_cells);
         check(cudaGetLastError(), "aquifer kernels");
         cudaEventRecord(ev[4]);
-        k_blocks<<<grid(static_cast<size_t>(n) * per, 256), 256>>>(d_chunks, n, d_corners, rows, d_cells, d_skip, nullptr, d_blocks);
+        k_blocks<<<grid(static_cast<size_t>(n) * per, 256), 256>>>(d_chunks, n, d_corners, d_colmap, rows, d_cells, d_skip, nullptr, d_blocks);
         check(cudaGetLastError(), "fill kernel");
         cudaEventRecord(ev[5]);
         if (aquifer_out) check(cudaMemcpy(aquifer_out, d_blocks, static_cast<size_t>(n) * per, cudaMemcpyDeviceToHost), "download aquifer");
         cudaEventRecord(ev[6]);
         k_heights<<<grid(static_cast<size_t>(n) * 256, tb), tb>>>(n, d_blocks, d_h0);
-        k_surface1<<<grid(static_cast<size_t>(n) * 256, 64), 64>>>(d_chunks, n, d_blocks, d_h0, d_h1, d_h2, d_nb, d_bbiomes, d_corners, rows, d_prelim);
-        k_surface2<<<grid(static_cast<size_t>(n) * 256, 64), 64>>>(d_chunks, n, d_blocks, d_h0, d_h1, d_h2, d_nb, d_bbiomes, d_corners, rows, d_prelim);
+        k_surface1<<<grid(static_cast<size_t>(n) * 256, 64), 64>>>(d_chunks, n, d_blocks, d_h0, d_h1, d_h2, d_nb, d_bbiomes, d_corners, d_colmap, rows, d_prelim);
+        k_surface2<<<grid(static_cast<size_t>(n) * 256, 64), 64>>>(d_chunks, n, d_blocks, d_h0, d_h1, d_h2, d_nb, d_bbiomes, d_corners, d_colmap, rows, d_prelim);
         check(cudaGetLastError(), "surface kernels");
         cudaEventRecord(ev[7]);
         check(cudaMemcpy(terrain_out, d_blocks, static_cast<size_t>(n) * per, cudaMemcpyDeviceToHost), "download terrain");

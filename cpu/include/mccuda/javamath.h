@@ -66,7 +66,17 @@ MCC_HD MCC_FI int32_t java_d2i(double v) {
 }
 
 // Mth.floor(double) = (int) Math.floor(v)
-MCC_HD MCC_FI int32_t mth_floor(double v) { return java_d2i(std::floor(v)); }
+MCC_HD MCC_FI int32_t mth_floor(double v) {
+#if defined(__CUDA_ARCH__)
+    // One cvt.rmi.s32.f64: floors and saturates exactly like Java's (int) cast.
+    // NaN -> 0 is decided on the bit pattern, which keeps the FP64 pipe (1/64 rate
+    // on GeForce parts) out of it.
+    if ((d2bits(v) & 0x7FFFFFFFFFFFFFFFull) > 0x7FF0000000000000ull) return 0;
+    return __double2int_rd(v);
+#else
+    return java_d2i(std::floor(v));
+#endif
+}
 
 // Java int arithmetic wraps; do it in unsigned to avoid C++ UB.
 MCC_HD MCC_FI int32_t jadd(int32_t a, int32_t b) {

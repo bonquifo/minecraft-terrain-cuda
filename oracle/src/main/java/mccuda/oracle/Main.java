@@ -25,7 +25,8 @@ import net.minecraft.world.level.levelgen.synth.NormalNoise;
  *   dump-noise  [quick]  per-seed octave tables and noise sample values
  *   dump-chunks [quick]  final density (L2), block fill (L3) and named-function volumes (L1)
  *   dump-terrain [quick] biomes, aquifer fill and full terrain (doFill + buildSurface)
- *   bench-vanilla ...    vanilla throughput (see VanillaBench)
+ *   bench-vanilla ...    vanilla core throughput: density + fill (see VanillaBench)
+ *   bench-terrain ...    vanilla full TERRAIN throughput without carvers (see TerrainBench)
  *   all                  export-ir, dump-rng, dump-noise, dump-chunks
  */
 public final class Main {
@@ -41,7 +42,7 @@ public final class Main {
             argv.remove(di);
         }
         if (argv.isEmpty() || argv.getFirst().equals("help")) {
-            System.out.println("usage: <export-ir|dump-rng|dump-noise|dump-chunks|bench-vanilla|all> [args] --data <dir>");
+            System.out.println("usage: <export-ir|dump-rng|dump-noise|dump-chunks|dump-terrain|bench-vanilla|bench-terrain|all> [args] --data <dir>");
             return;
         }
 
@@ -75,6 +76,7 @@ public final class Main {
                 ChunkDump.dump(vanilla, oracleData.resolve(quick ? "quick" : "full"), quick);
             }
             case "bench-vanilla" -> VanillaBench.run(vanilla, rest, dataRoot.resolve("bench"));
+            case "bench-terrain" -> TerrainBench.run(vanilla, rest, dataRoot.resolve("bench"));
             case "all" -> {
                 exportIr(vanilla, gameData);
                 RngDump.dump(oracleData.resolve("rng.json"));

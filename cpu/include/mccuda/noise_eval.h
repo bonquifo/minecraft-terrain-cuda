@@ -54,7 +54,14 @@ constexpr double kHalfRoundOff = 0x1.fffffffffffffp+23;   // Math.nextDown(1.677
 
 // GradientNoise.wrap
 MCC_HD MCC_FI double gn_wrap(double x) {
+#if defined(__CUDA_ARCH__)
+    // -H <= x < H decided on the bit pattern (IEEE magnitudes order like integers):
+    // integer ops instead of two FP64 compares. -0.0 and -H pass, +H and NaN fail.
+    const uint64_t b = d2bits(x), mag = b & 0x7FFFFFFFFFFFFFFFull, hb = 0x416FFFFFFFFFFFFFull;   // bits of kHalfRoundOff
+    if ((b >> 63) ? mag <= hb : mag < hb) return x;
+#else
     if (x >= -kHalfRoundOff && x < kHalfRoundOff) return x;
+#endif
     double q = x / 3.3554432E7;
     q = q + 0.5;
     q = std::floor(q);

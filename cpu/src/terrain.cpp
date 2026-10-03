@@ -748,25 +748,34 @@ private:
 }  // namespace
 
 void cpu_generate_terrain(TerrainSeed& ts, int cx, int cz, ChunkTerrain& out) {
+    const int qh = ts.ir.height / 4;
+    VolumeEvaluator eval(ts.ir, ts.tables);
+    // Biomes of the 3x3 neighbourhood (each chunk with a fresh R-tree candidate).
+    std::vector<std::vector<uint8_t>> nb(9, std::vector<uint8_t>(static_cast<size_t>(16 * qh)));
+    const uint8_t* nbp[9];
+    for (int dz = -1; dz <= 1; ++dz)
+        for (int dx = -1; dx <= 1; ++dx) {
+            size_t k = static_cast<size_t>((dz + 1) * 3 + dx + 1);
+            cpu_chunk_biomes(ts, eval, cx + dx, cz + dz, nb[k].data());
+            nbp[k] = nb[k].data();
+        }
+    cpu_terrain_from_biomes(ts, eval, cx, cz, nbp, out);
+}
+
+void cpu_terrain_from_biomes(TerrainSeed& ts, VolumeEvaluator& eval, int cx, int cz, const uint8_t* const nb[9], ChunkTerrain& out) {
     const IR& ir = ts.ir;
     const TerrainModel& tm = ts.tm;
     const int h = ir.height;
     const int qh = h / 4;
     const size_t per = static_cast<size_t>(16 * 16 * h);
-    VolumeEvaluator eval(ir, ts.tables);
-
-    // Biomes of the 3x3 neighbourhood (each chunk with a fresh R-tree candidate).
-    std::vector<std::vector<uint8_t>> nb(9, std::vector<uint8_t>(static_cast<size_t>(16 * qh)));
-    for (int dz = -1; dz <= 1; ++dz)
-        for (int dx = -1; dx <= 1; ++dx) cpu_chunk_biomes(ts, eval, cx + dx, cz + dz, nb[static_cast<size_t>((dz + 1) * 3 + dx + 1)].data());
-    out.biomes = nb[4];
+    out.biomes.assign(nb[4], nb[4] + 16 * qh);
     const int qmin = ir.min_y >> 2;
     std::function<int(int, int, int)> quart_biome = [&](int qx, int qy, int qz) {
         int ccx = qx >> 2, ccz = qz >> 2;
         int dx = ccx - cx, dz = ccz - cz;
         if (dx < -1 || dx > 1 || dz < -1 || dz > 1) throw std::runtime_error("biome lookup outside the 3x3 neighbourhood");
         int cqy = std::min(std::max(qy, qmin), qmin + qh - 1) - qmin;
-        return static_cast<int>(nb[static_cast<size_t>((dz + 1) * 3 + dx + 1)][static_cast<size_t>((cqy * 4 + (qz & 3)) * 4 + (qx & 3))]);
+        return static_cast<int>(nb[(dz + 1) * 3 + dx + 1][(cqy * 4 + (qz & 3)) * 4 + (qx & 3)]);
     };
 
     // Final density over the chunk volume, then doFill with the aquifer (z, x, y descending).

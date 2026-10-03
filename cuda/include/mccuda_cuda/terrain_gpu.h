@@ -11,8 +11,13 @@
 
 namespace mcc::cuda {
 
+// Accumulated per stage (CUDA events on the default stream) plus host wall time.
+//   biome    climate + R-tree search + tie chain        noise    density/ore corner values
+//   aquifer  surface-level grid + aquifer cells          fill     final density + aquifer substance per block
+//   surface  heights + material rules + extensions       h2d/d2h  transfers (d2h: terrain, plus biomes/aquifer if requested)
 struct TerrainTiming {
-    double h2d_ms = 0, biome_ms = 0, density_ms = 0, aquifer_ms = 0, surface_ms = 0, d2h_ms = 0, wall_ms = 0;
+    double h2d_ms = 0, biome_ms = 0, noise_ms = 0, aquifer_ms = 0, fill_ms = 0, surface_ms = 0, d2h_ms = 0, wall_ms = 0;
+    double kernel_ms() const { return biome_ms + noise_ms + aquifer_ms + fill_ms + surface_ms; }
 };
 
 class FullTerrainGenerator {
@@ -31,5 +36,9 @@ private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
+
+// Page-locked host memory (faster device-to-host copies for terrain_out).
+uint8_t* alloc_pinned(size_t bytes);
+void free_pinned(void* p);
 
 }  // namespace mcc::cuda

@@ -48,8 +48,8 @@ private:
 // from device compilation when debugging.
 void generated_host_chunk(const IR& ir, const SeedTables& tables, int cx, int cz, float* density, uint8_t* fill);
 
-// Compares every memoised node of the generated evaluators with the CPU
-// reference interpreter for one chunk's columns and corners; returns #mismatches.
+// Compares the generated evaluators (run on the host) with the CPU reference
+// interpreter, block by block, for one chunk; returns #mismatches (prints up to 12).
 int debug_compare_generated(const IR& ir, const SeedTables& tables, int cx, int cz);
 
 void print_device();

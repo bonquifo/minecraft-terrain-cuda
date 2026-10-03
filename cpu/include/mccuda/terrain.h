@@ -63,6 +63,12 @@ struct ChunkTerrain {
 // are computed internally from scratch, each with a fresh R-tree candidate.
 void cpu_generate_terrain(TerrainSeed& ts, int cx, int cz, ChunkTerrain& out);
 
+// Fill + surface of one chunk from precomputed biomes of its 3x3 neighbourhood
+// (nb[(dz + 1) * 3 + dx + 1]); this is how a region is generated, with every
+// chunk's biomes computed once. TerrainSeed is only read, so threads may share it
+// (each with its own VolumeEvaluator).
+void cpu_terrain_from_biomes(TerrainSeed& ts, VolumeEvaluator& eval, int cx, int cz, const uint8_t* const nb[9], ChunkTerrain& out);
+
 // Biomes of one chunk exactly as vanilla's doCreateBiomes stores them.
 void cpu_chunk_biomes(TerrainSeed& ts, VolumeEvaluator& eval, int cx, int cz, uint8_t* out);
 

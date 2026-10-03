@@ -184,7 +184,7 @@ final class TerrainDump {
     }
 
     @SuppressWarnings("unchecked")
-    private static ThreadLocal<?> rtreeLastResult(MultiNoiseBiomeSource source) throws ReflectiveOperationException {
+    static ThreadLocal<?> rtreeLastResult(MultiNoiseBiomeSource source) throws ReflectiveOperationException {
         Method pm = MultiNoiseBiomeSource.class.getDeclaredMethod("parameters");
         pm.setAccessible(true);
         Climate.ParameterList<Holder<Biome>> list = (Climate.ParameterList<Holder<Biome>>) pm.invoke(source);

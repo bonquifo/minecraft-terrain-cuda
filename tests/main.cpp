@@ -11,6 +11,7 @@
 
 #include "mccuda/ir.h"
 #include "mccuda/volume_eval.h"
+#include "mccuda_cuda/generator.h"
 #include "tests.h"
 
 #ifndef MCCUDA_DATA_DIR
@@ -64,6 +65,15 @@ int main(int argc, char** argv) {
         IR ir = load_ir(ir_path);
         if (only.count("noise")) ok &= run_noise(ir, oracle + "/noise", set_name == "quick");
         OracleSet set = load_oracle_set(oracle + "/" + set_name);
+        if (only.count("debug-gen")) {
+            const OracleSeed& s0 = set.seeds.front();
+            SeedTables t = build_seed_tables(ir, s0.seed);
+            for (const auto& c : s0.chunks) {
+                std::printf("[debug-gen] seed %lld chunk (%d,%d)\n", static_cast<long long>(s0.seed), c.cx, c.cz);
+                int bad = cuda::debug_compare_generated(ir, t, c.cx, c.cz);
+                if (bad) { ok = false; break; }
+            }
+        }
         if (only.count("named")) ok &= run_named_functions(ir, set);
         if (only.count("chunks")) {
             int ran = 0;

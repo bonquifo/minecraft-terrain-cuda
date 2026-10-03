@@ -20,6 +20,13 @@ struct TerrainTiming {
     double kernel_ms() const { return biome_ms + noise_ms + aquifer_ms + fill_ms + surface_ms; }
 };
 
+// Biome quarts searched, how many of them the R-tree's last-result candidate changed
+// (exact parameter ties), and how many of those changes picked a different biome:
+// cumulative over the generator's lifetime.
+struct BiomeTieStats {
+    int64_t quarts, overrides, biome_changes;
+};
+
 class FullTerrainGenerator {
 public:
     // pipeline_slots: batches in flight (2: transfers and host work of one batch overlap
@@ -33,6 +40,7 @@ public:
     // terrain_out: u8 palette index per block (canonical layout), chunks back to back.
     // biomes_out (u8 per quart) and aquifer_out (u8 per block, after doFill) are optional.
     void generate(const ChunkXZ* chunks, int count, uint8_t* terrain_out, uint8_t* biomes_out, uint8_t* aquifer_out, TerrainTiming* timing = nullptr);
+    BiomeTieStats biome_tie_stats();
 
 private:
     struct Impl;

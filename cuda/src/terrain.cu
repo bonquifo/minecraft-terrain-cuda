@@ -372,7 +372,8 @@ __global__ void k_biome_ties(int nb, const int64_t* targets, const int32_t* firs
 // result equals the previous L*, that is decided by tie[p] alone. One warp per biome
 // chunk takes 32 chain positions at a time: if the window is in sync and has no tie,
 // every result is L*; otherwise lane 0 walks the window with the full rule.
-__global__ void k_biome_chain(int nb, const int64_t* targets, const int32_t* first_min, const int64_t* min_dist, const uint8_t* tie, uint8_t* biomes) {
+__global__ void k_biome_chain(int nb, const int64_t* targets, const int32_t* first_min, const int64_t* min_dist, const uint8_t* tie, uint8_t* biomes,
+                              unsigned long long* overrides) {
     const int warp = (blockIdx.x * blockDim.x + threadIdx.x) >> 5, lane = threadIdx.x & 31;
     if (warp >= nb) return;
     const int per = 16 * (c_tt.height / 4);
@@ -398,6 +399,10 @@ __global__ void k_biome_chain(int nb, const int64_t* targets, const int32_t* fir
                     if (prev < 0) cur = ls;
                     else if (prev == prev_lstar && !tie[base + p0 + k]) cur = ls;
                     else cur = tree_distance(c_tt.leaf_node[prev], targets + ik * 7) == min_dist[ik] ? prev : ls;
+                    if (cur != ls) {   // statistics: the last-result rule changed the leaf (and maybe the biome)
+                        atomicAdd(overrides, 1ull);
+                        if (c_tt.leaf_biome[cur] != c_tt.leaf_biome[ls]) atomicAdd(overrides + 1, 1ull);
+                    }
                     biomes[ik] = static_cast<uint8_t>(c_tt.leaf_biome[cur]);
                     prev = cur;
                     prev_lstar = ls;
@@ -1091,6 +1096,8 @@ struct FullTerrainGenerator::Impl {
     float* d_zoom_sqf = nullptr;
     std::vector<std::unique_ptr<Slot>> slots;
     size_t next_slot = 0;
+    unsigned long long* d_tie_overrides = nullptr;   // biome quarts where the R-tree's last-result rule changed the leaf
+    uint64_t quarts_searched = 0;
 
     Impl(const IR& ir_, const TerrainModel& tm_, int mb, int nslots) : ir(ir_), tm(tm_), max_batch(mb) {
         rows = ir.height / 8 + 1;
@@ -1101,6 +1108,8 @@ struct FullTerrainGenerator::Impl {
         if (tm.palette.size() > 64 || tm.biomes.size() > 128) throw std::runtime_error("palette/biome tables too large");
         check(cudaDeviceSetLimit(cudaLimitStackSize, 16 * 1024), "stack limit");
         for (int i = 0; i < std::max(nslots, 1); ++i) slots.push_back(std::make_unique<Slot>(mb, rows, per, qper, cells));
+        check(cudaMalloc(&d_tie_overrides, 2 * sizeof(unsigned long long)), "malloc");
+        check(cudaMemset(d_tie_overrides, 0, 2 * sizeof(unsigned long long)), "memset");
         check(cudaMalloc(&d_zoom_sq, sizeof(double) * 8192), "malloc zoom table");
         check(cudaMalloc(&d_zoom_sqf, sizeof(float) * 8192), "malloc zoom table");
         k_zoom_squares<<<32, 256>>>(d_zoom_sq, d_zoom_sqf);
@@ -1111,7 +1120,8 @@ struct FullTerrainGenerator::Impl {
     ~Impl() {
         cudaDeviceSynchronize();
         slots.clear();
-        void* ptrs[] = {d_octaves, d_layers, d_tree, d_tree_children, d_leaf_biome, d_leaf_node, d_axis_layers, d_axis_y, d_zoom_sq, d_zoom_sqf};
+        void* ptrs[] = {d_octaves, d_layers, d_tree, d_tree_children, d_leaf_biome, d_leaf_node, d_axis_layers, d_axis_y, d_zoom_sq, d_zoom_sqf,
+                        d_tie_overrides};
         for (void* p : ptrs) cudaFree(p);
     }
 
@@ -1278,7 +1288,9 @@ struct FullTerrainGenerator::Impl {
         const int runs = (ir.height / 4 + kBiomeRun - 1) / kBiomeRun;
         k_biome_quarts<<<grid(static_cast<size_t>(nbk) * 16 * runs, tb), tb, 0, st>>>(S.d_bchunks, nbk, S.d_bcol, S.d_targets, S.d_firstmin, S.d_mindist);
         k_biome_ties<<<grid(static_cast<size_t>(nbk) * qper, tb), tb, 0, st>>>(nbk, S.d_targets, S.d_firstmin, S.d_mindist, S.d_ties);
-        k_biome_chain<<<grid(static_cast<size_t>(nbk) * 32, tb), tb, 0, st>>>(nbk, S.d_targets, S.d_firstmin, S.d_mindist, S.d_ties, S.d_bbiomes);
+        k_biome_chain<<<grid(static_cast<size_t>(nbk) * 32, tb), tb, 0, st>>>(nbk, S.d_targets, S.d_firstmin, S.d_mindist, S.d_ties, S.d_bbiomes,
+                                                                              d_tie_overrides);
+        quarts_searched += static_cast<uint64_t>(nbk) * qper;
         check(cudaGetLastError(), "biome kernels");
         check(cudaEventRecord(S.ev[2], st), "event");
         const int ck = n * kCols;   // upper bound of distinct corner columns
@@ -1352,6 +1364,13 @@ struct FullTerrainGenerator::Impl {
 FullTerrainGenerator::FullTerrainGenerator(const IR& ir, const TerrainModel& tm, int max_batch, int pipeline_slots)
     : impl_(std::make_unique<Impl>(ir, tm, max_batch, pipeline_slots)) {}
 FullTerrainGenerator::~FullTerrainGenerator() = default;
+BiomeTieStats FullTerrainGenerator::biome_tie_stats() {
+    impl_->collect_all(nullptr);
+    unsigned long long n[2] = {0, 0};
+    check(cudaMemcpy(n, impl_->d_tie_overrides, sizeof n, cudaMemcpyDeviceToHost), "download tie statistics");
+    return {static_cast<int64_t>(impl_->quarts_searched), static_cast<int64_t>(n[0]), static_cast<int64_t>(n[1])};
+}
+
 void FullTerrainGenerator::set_seed(int64_t seed) {
     impl_->collect_all(nullptr);
     impl_->set_seed(seed);

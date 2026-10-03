@@ -370,6 +370,9 @@ def main():
     ccore = {t: stats(fnum(r, 'chunks_per_s') for r in ccore_rows if int(r['threads']) == t) for t in (1, 32)}
     gcore = stats(fnum(r, 'chunks_per_s') for r in read_csv(FINAL / 'gpu_core.csv'))
     tests, tests_ok = parse_tests(FINAL / 'tests_full.txt')
+    ties = read_csv(FINAL / 'gpu_biome_ties.csv')
+    tie_leaf = [1e6 * int(t['leaf_overrides']) / int(t['quarts']) for t in ties]
+    tie_biome = [1e6 * int(t['biome_changes']) / int(t['quarts']) for t in ties]
     verify = parse_verify(FINAL / 'run_all.log')
 
     D['tp_items'] = [
@@ -524,6 +527,13 @@ def main():
     H.append(table(['level / check', 'values', 'mismatches', '', 'notes'], test_rows, num_cols=(1, 2)))
     H.append('<p>On top of the oracle set, the benchmark harness dumps three contiguous regions from vanilla and compares them block for block with both generators:</p>')
     H.append(table(['generator', 'region', 'blocks', 'mismatches'], verify_rows, num_cols=(2, 3)))
+    H.append('<p><b>The R-tree tie rule is not a corner case.</b> Over %d seeds (%s quart lookups each, region 128\u00d7128 plus borders), the '
+             'last-result candidate changed the chosen parameter leaf at %.0f\u2013%.0f ppm of lookups and the <i>biome</i> at %.0f\u2013%.0f ppm, because '
+             'quantized climate values regularly land exactly on a box boundary, which puts the target inside two adjacent boxes at distance 0. Returning the plain nearest leaf would put a wrong biome in roughly one '
+             'quart in %s. Both generators reproduce the rule exactly; it acts along each chunk\'s chain of lookups. The only history dependence vanilla '
+             'has beyond that is the first lookup of a chunk, which starts from whatever the worker thread looked up last; the oracle and our generators '
+             'start it empty.</p>' % (len(ties), '{:,}'.format(int(ties[0]['quarts'])), min(tie_leaf), max(tie_leaf), min(tie_biome), max(tie_biome),
+                                     '{:,}'.format(int(round(1e6 / st.mean(tie_biome), -2)))))
     H.append('<p>The engine behaviours that exactness depends on (two evaluation semantics, the R-tree tie rule, aquifer prefill, heightmap order in '
              'the material rules) are written up in <a href="ENGINE_NOTES.md">ENGINE_NOTES.md</a>.</p>')
 
@@ -589,16 +599,18 @@ blocked it. Enqueueing each download after the following upload fixed it (Nsight
              'noises, NoiseBasedAquifer, doFill, the material rules with ore veins, clay bands, eroded-badlands and frozen-ocean extensions, and the heightmap '
              'updates they depend on.</li>')
     H.append('<li><b>Not included:</b> carvers (they were not requested), structures (Beardifier is empty without structure starts), blending with '
-             'old-world chunks, features, lighting. The R-tree tie rule depends on which chunk a worker thread generated before; ours resets it per chunk, '
-             'which is what the oracle does, and differs from a live server only on exact parameter ties.</li>')
+             'old-world chunks, features, lighting. In a live server the first biome lookup of a chunk starts from the worker thread\'s previous lookup; '
+             'ours starts empty, like the oracle, so a server can differ where that first lookup is an exact tie (see Correctness).</li>')
     H.append('<li><b>Decisions taken without the author:</b> Minecraft 26.3 on native Windows; game-derived data (IR, terrain model, oracle dumps) is '
              'extracted locally into the git-ignored <code>data/</code> and never committed; clocks unlocked; overworld only; the optional Fabric/JNI mod '
              'was not started.</li></ul>')
-    H.append('<h2>Reproduce</h2><pre>powershell -File build.ps1                 # CMake + Ninja, Release\n'
-             'powershell -File oracle\\regen.ps1        # reference data from the local game jar (data/, git-ignored)\n'
-             'build\\tests\\mccuda_tests.exe --set full  # bit-exactness, all levels\n'
-             'python bench\\run_all.py                  # every measurement in this report\n'
-             'python docs\\make_report.py               # this page and docs/img/*.png</pre>')
+    steps = [('powershell -File build.ps1', 'CMake + Ninja, Release'),
+             ('powershell -File oracle\\regen.ps1', 'reference data from the local game jar (data/, git-ignored)'),
+             ('build\\tests\\mccuda_tests.exe --set full', 'bit-exactness, all levels'),
+             ('python bench\\run_all.py', 'every measurement in this report'),
+             ('python docs\\make_report.py', 'this page and docs/img/*.png')]
+    width = max(len(c) for c, _ in steps) + 2
+    H.append('<h2>Reproduce</h2><pre>%s</pre>' % '\n'.join(html.escape(c.ljust(width) + '# ' + d) for c, d in steps))
     H.append('</main></body></html>')
     out = ROOT / 'docs' / 'report.html'
     out.write_text('\n'.join(H), encoding='utf-8')

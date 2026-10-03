@@ -144,6 +144,9 @@ def main():
           '--tag', 'pageable', '--out', OUT / 'gpu_pageable.csv')
     bench('--mode', 'core-gpu', '--region', 64, '--seed', SEED, '--reps', reps, '--warmup', 2, '--batch', 1024, '--version', 0,
           '--out', OUT / 'gpu_core.csv')
+    for s in (SEED, 1, 2, 3, 42):   # how often the R-tree's last-result rule decides a lookup (writes gpu_biome_ties.csv)
+        bench('--mode', 'terrain-gpu', '--region', 128, '--seed', s, '--reps', 1, '--warmup', 0, '--batch', 2048, '--tag', 'ties',
+              '--out', OUT / 'gpu_ties_timing.csv')
     gpu_info('end')
     log('run_all.py done')
 

@@ -1,4 +1,4 @@
-[unit] Java semantics, gradient table, MD5, host FP contraction
+﻿[unit] Java semantics, gradient table, MD5, host FP contraction
   unit                               PASS  (72 checked, 0 mismatches)
 [rng] C:/MinecraftCuda/data/oracle/26.3/rng.json
   seedFromHashOf (MD5)               PASS  (12 checked, 0 mismatches)
@@ -13,11 +13,11 @@
   15 chunk dumps x 20 functions
   L1 named functions                 PASS  (29491200 checked, 0 mismatches)
 [chunks] C:/MinecraftCuda/data/oracle/26.3/full  impl=cpu
-  576 chunks over 32 seeds, generator time 2.74 s
+  576 chunks over 32 seeds, generator time 2.86 s
   L2 final density (cpu)             PASS  (56623104 checked, 0 mismatches)
   L3 block fill (cpu)                PASS  (56623104 checked, 0 mismatches)
 [chunks] C:/MinecraftCuda/data/oracle/26.3/full  impl=gen-host
-  576 chunks over 32 seeds, generator time 2.07 s
+  576 chunks over 32 seeds, generator time 2.19 s
   L2 final density (gen-host)        PASS  (56623104 checked, 0 mismatches)
   L3 block fill (gen-host)           PASS  (56623104 checked, 0 mismatches)
 [chunks] C:/MinecraftCuda/data/oracle/26.3/full  impl=cuda-v0
@@ -25,12 +25,12 @@
   L2 final density (cuda-v0)         PASS  (56623104 checked, 0 mismatches)
   L3 block fill (cuda-v0)            PASS  (56623104 checked, 0 mismatches)
 [terrain] C:/MinecraftCuda/data/oracle/26.3/full  impl=cpu
-  576 chunks, generator time 10.61 s
+  576 chunks, generator time 10.20 s
   biomes (cpu)                       PASS  (884736 checked, 0 mismatches)
   aquifer fill (cpu)                 PASS  (56623104 checked, 0 mismatches)
   terrain (cpu)                      PASS  (56623104 checked, 0 mismatches)
 [terrain] C:/MinecraftCuda/data/oracle/26.3/full  impl=cuda-terrain
-  576 chunks, generator time 0.98 s
+  576 chunks, generator time 0.91 s
   biomes (cuda-terrain)              PASS  (884736 checked, 0 mismatches)
   aquifer fill (cuda-terrain)        PASS  (56623104 checked, 0 mismatches)
   terrain (cuda-terrain)             PASS  (56623104 checked, 0 mismatches)

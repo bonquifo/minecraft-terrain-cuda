@@ -144,6 +144,18 @@ void bench_terrain_gpu(const Options& o, const IR& ir, const TerrainModel& tm) {
             r.seconds = now_s() - s;
             if (rep >= 0) rows.push_back(r);
         }
+        cuda::BiomeTieStats ts = gen.biome_tie_stats();
+        const double q = ts.quarts ? static_cast<double>(ts.quarts) : 1.0;
+        std::printf("biome ties: the R-tree's last-result rule changed the leaf of %lld of %lld quart lookups (%.2f ppm), the biome of %lld (%.2f ppm)\n",
+                    static_cast<long long>(ts.overrides), static_cast<long long>(ts.quarts), 1e6 * static_cast<double>(ts.overrides) / q,
+                    static_cast<long long>(ts.biome_changes), 1e6 * static_cast<double>(ts.biome_changes) / q);
+        if (!o.tag.empty() && o.tag.rfind("ties", 0) == 0) {
+            std::filesystem::path tp = std::filesystem::path(o.out).parent_path() / "gpu_biome_ties.csv";
+            bool fresh = !std::filesystem::exists(tp);
+            std::ofstream tf(tp, std::ios::app);
+            if (fresh) tf << "seed,region,quarts,leaf_overrides,biome_changes\n";
+            tf << o.seed << ',' << o.region << ',' << ts.quarts << ',' << ts.overrides << ',' << ts.biome_changes << '\n';
+        }
     }
     report(o, "cuda-terrain", rows);
     if (!o.verify.empty()) {

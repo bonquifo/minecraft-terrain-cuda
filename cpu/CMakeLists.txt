@@ -3,5 +3,8 @@ add_library(mccuda_core STATIC
   src/ir.cpp
   src/seed_tables.cpp
   src/volume_eval.cpp
+  src/terrain_model.cpp
+  src/biome.cpp
+  src/terrain.cpp
 )
 target_include_directories(mccuda_core PUBLIC include ${CMAKE_SOURCE_DIR}/third_party)

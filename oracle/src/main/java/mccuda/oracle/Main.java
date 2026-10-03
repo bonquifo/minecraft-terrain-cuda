@@ -24,6 +24,7 @@ import net.minecraft.world.level.levelgen.synth.NormalNoise;
  *   dump-rng             Xoroshiro128++ / legacy LCG / seed-hash reference streams
  *   dump-noise  [quick]  per-seed octave tables and noise sample values
  *   dump-chunks [quick]  final density (L2), block fill (L3) and named-function volumes (L1)
+ *   dump-terrain [quick] biomes, aquifer fill and full terrain (doFill + buildSurface)
  *   bench-vanilla ...    vanilla throughput (see VanillaBench)
  *   all                  export-ir, dump-rng, dump-noise, dump-chunks
  */
@@ -62,7 +63,11 @@ public final class Main {
         String cmd = argv.getFirst();
         List<String> rest = argv.subList(1, argv.size());
         switch (cmd) {
-            case "export-ir" -> new IrExporter(vanilla).export(gameData.resolve("overworld_ir.json"));
+            case "export-ir" -> exportIr(vanilla, gameData);
+            case "dump-terrain" -> {
+                boolean quick = rest.contains("quick");
+                TerrainDump.dump(vanilla, gameData, oracleData.resolve(quick ? "quick" : "full"), quick);
+            }
             case "dump-rng" -> RngDump.dump(oracleData.resolve("rng.json"));
             case "dump-noise" -> NoiseDump.dump(vanilla, oracleData.resolve("noise"), rest.contains("quick"));
             case "dump-chunks" -> {
@@ -71,15 +76,24 @@ public final class Main {
             }
             case "bench-vanilla" -> VanillaBench.run(vanilla, rest, dataRoot.resolve("bench"));
             case "all" -> {
-                new IrExporter(vanilla).export(gameData.resolve("overworld_ir.json"));
+                exportIr(vanilla, gameData);
                 RngDump.dump(oracleData.resolve("rng.json"));
                 NoiseDump.dump(vanilla, oracleData.resolve("noise"), false);
                 ChunkDump.dump(vanilla, oracleData.resolve("quick"), true);
                 ChunkDump.dump(vanilla, oracleData.resolve("full"), false);
+                TerrainDump.dump(vanilla, gameData, oracleData.resolve("quick"), true);
+                TerrainDump.dump(vanilla, gameData, oracleData.resolve("full"), false);
             }
             default -> throw new IllegalArgumentException("unknown command " + cmd);
         }
         System.out.printf("oracle: %s done in %.1f s%n", cmd, (System.nanoTime() - t0) / 1e9);
+    }
+
+    /** Terrain model first: its material-rule walk registers the extra IR roots and noises. */
+    static void exportIr(Vanilla vanilla, Path gameData) throws Exception {
+        TerrainModel model = new TerrainModel(vanilla);
+        model.export(gameData.resolve("overworld_terrain.json"));
+        new IrExporter(vanilla, model).export(gameData.resolve("overworld_ir.json"));
     }
 
     /** Vanilla registries and the overworld settings, shared by all commands. */

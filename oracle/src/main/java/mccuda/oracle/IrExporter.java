@@ -33,6 +33,7 @@ import net.minecraft.world.level.levelgen.densityfunction.op.BinaryFunction;
 import net.minecraft.world.level.levelgen.densityfunction.op.BlendDensityFunction;
 import net.minecraft.world.level.levelgen.densityfunction.op.CacheFunction;
 import net.minecraft.world.level.levelgen.densityfunction.op.ClampFunction;
+import net.minecraft.world.level.levelgen.densityfunction.op.FindTopSurfaceFunction;
 import net.minecraft.world.level.levelgen.densityfunction.op.IntervalSelectFunction;
 import net.minecraft.world.level.levelgen.densityfunction.op.InterpolatedFunction;
 import net.minecraft.world.level.levelgen.densityfunction.op.LerpFunction;
@@ -81,8 +82,11 @@ final class IrExporter {
     private final Map<String, Holder<NormalNoise>> noiseDefs = new TreeMap<>();
     private final Map<String, Integer> histogram = new TreeMap<>();
 
-    IrExporter(Main.Vanilla vanilla) {
+    private final TerrainModel model;
+
+    IrExporter(Main.Vanilla vanilla, TerrainModel model) {
         this.vanilla = vanilla;
+        this.model = model;
     }
 
     private ExportCache reuseOrPrepare(CacheFunction cache) {
@@ -104,6 +108,12 @@ final class IrExporter {
         roots.put("final_density", optimizer.rewrite(rawFinal));
         for (Map.Entry<String, DensityFunction> e : namedRaw.entrySet()) {
             roots.put(e.getKey(), optimizer.rewrite(e.getValue()));
+        }
+        // Extra roots for the full TERRAIN step (climate, aquifer, surface, ore veins), compiled
+        // with the same optimizer so caches are shared exactly as in one vanilla RandomState.
+        if (model != null) {
+            for (Map.Entry<String, DensityFunction> e : model.extraRoots.entrySet()) roots.put(e.getKey(), optimizer.rewrite(e.getValue()));
+            for (Holder<NormalNoise> h : model.extraNoises.values()) noiseKey(h);
         }
         for (DensityFunction root : roots.values()) number(root);
 
@@ -186,6 +196,7 @@ final class IrExporter {
             case InterpolatedFunction i -> "interpolated";
             case SliceFunction s -> "slice";
             case BlendDensityFunction b -> "blend_density";
+            case FindTopSurfaceFunction fts -> "find_top_surface";
             default -> throw new IllegalStateException("IR exporter does not support " + f.getClass().getName() + ": " + f);
         };
     }
@@ -283,6 +294,12 @@ final class IrExporter {
                 json.name("in").value(ids.get(s.input()));
             }
             case BlendDensityFunction b -> json.name("in").value(ids.get(b.input()));
+            case FindTopSurfaceFunction fts -> {
+                json.name("density").value(ids.get(fts.density()));
+                json.name("upper_bound").value(ids.get(fts.upperBound()));
+                json.name("lower_bound").value(fts.lowerBound());
+                json.name("cell_height").value(fts.cellHeight());
+            }
             default -> throw new IllegalStateException("unreachable");
         }
         json.endObject();

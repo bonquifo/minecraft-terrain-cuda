@@ -11,7 +11,7 @@ namespace mcc {
 
 enum class NodeType {
     Cache, Constant, Simple, Gradient, Noise, ShiftA, ShiftB, Shift, BlendedNoise, Binary, Unary, Clamp, Lerp,
-    RangeChoice, IntervalSelect, Spline, Interpolated, Slice, BlendDensity,
+    RangeChoice, IntervalSelect, Spline, Interpolated, Slice, BlendDensity, FindTopSurface,
 };
 
 enum class BinOp { Add, Sub, Mul, Div, Min, Max };
@@ -57,6 +57,7 @@ struct Node {
     double xz_factor = 0.0, y_factor = 0.0, smear_mult = 0.0;
     int cache_id = -1;
     int cell_xz = 0, cell_y = 0;
+    int density = -1, upper_bound = -1, lower_bound = 0, cell_height = 0;   // find_top_surface
     std::shared_ptr<Spline> spline;
 };
 

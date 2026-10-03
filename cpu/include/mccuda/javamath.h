@@ -99,6 +99,24 @@ MCC_HD MCC_FI float java_fmax(float a, float b) {
     return (a >= b) ? a : b;
 }
 
+MCC_HD MCC_FI double java_dmin(double a, double b) {
+    if (a != a) return a;
+    if (a == 0.0 && b == 0.0 && d2bits(b) == 0x8000000000000000ull) return b;
+    return (a <= b) ? a : b;
+}
+
+MCC_HD MCC_FI double java_dmax(double a, double b) {
+    if (a != a) return a;
+    if (a == 0.0 && b == 0.0 && d2bits(a) == 0x8000000000000000ull) return b;
+    return (a >= b) ? a : b;
+}
+
+// Mth.clamp(double, double, double)
+MCC_HD MCC_FI double mth_dclamp(double v, double lo, double hi) { return v < lo ? lo : java_dmin(v, hi); }
+
+// Math.round(float): floor(a + 1/2) computed exactly, then (int) with saturation.
+MCC_HD MCC_FI int32_t java_round_f(float a) { return java_d2i(std::floor(static_cast<double>(a) + 0.5)); }
+
 MCC_HD MCC_FI int32_t java_imin(int32_t a, int32_t b) { return a <= b ? a : b; }
 MCC_HD MCC_FI int32_t java_imax(int32_t a, int32_t b) { return a >= b ? a : b; }
 

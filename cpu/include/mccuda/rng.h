@@ -41,6 +41,8 @@ public:
     int32_t next_int(int32_t bound);
     double next_double();
     float next_float();
+    bool next_boolean() { return (gen_.next_long() & 1ull) != 0; }
+    int32_t next_int_between_inclusive(int32_t min, int32_t max) { return next_int(max - min + 1) + min; }
     void consume_count(int rounds);
     XoroshiroPositional fork_positional();
 

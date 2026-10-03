@@ -28,4 +28,6 @@ std::vector<Impl> cuda_implementations(const IR&) {
     return v;
 }
 
+std::vector<TerrainImpl> cuda_terrain_implementations() { return {}; }
+
 }  // namespace mcc::test

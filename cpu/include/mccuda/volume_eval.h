@@ -47,6 +47,9 @@ class VolumeEvaluator {
 public:
     VolumeEvaluator(const IR& ir, const SeedTables& tables);
     void sample(int node, const Volume& v, float* out);
+    // DensitySampler.sampleValue semantics (the point path). Caches are treated
+    // as pure memoisation; see docs for why this is exact for the overworld.
+    float point(int node, int x, int y, int z);
     void clear_caches();
 
 private:
@@ -55,6 +58,8 @@ private:
     void sample_interpolated_block_step(const Node& n, const Volume& v, float* out);
     void sample_slice(const Node& n, const Volume& v, float* out);
     float spline_eval(const Spline& s, int index, std::vector<std::vector<float>>& coords, std::vector<int>& coord_ids, const Volume& v);
+    float spline_point(const Spline& s, int x, int y, int z);
+    float find_surface_from(const Node& n, int x, int z, float upper_bound);
 
     const IR& ir_;
     const SeedTables& t_;

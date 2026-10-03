@@ -41,7 +41,7 @@ std::vector<Impl> mcc::test::implementations(const IR& ir) {
 
 int main(int argc, char** argv) {
     std::string data = MCCUDA_DATA_DIR, set_name = "quick", impl_name = "all";
-    std::set<std::string> only = {"unit", "rng", "noise", "named", "chunks"};
+    std::set<std::string> only = {"unit", "rng", "noise", "named", "chunks", "terrain"};
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         auto next = [&]() -> std::string { if (i + 1 >= argc) throw std::runtime_error("missing value for " + a); return argv[++i]; };
@@ -83,6 +83,16 @@ int main(int argc, char** argv) {
                 ++ran;
             }
             if (ran == 0) throw std::runtime_error("no implementation named " + impl_name);
+        }
+        if (only.count("terrain")) {
+            TerrainModel tm = load_terrain_model(data + "/gamedata/" + ver + "/overworld_terrain.json");
+            int ran = 0;
+            for (const TerrainImpl& impl : terrain_implementations()) {
+                if (impl_name != "all" && impl_name != impl.name) continue;
+                ok &= run_terrain(ir, tm, set, impl);
+                ++ran;
+            }
+            if (ran == 0) std::printf("[terrain] no implementation named %s\n", impl_name.c_str());
         }
         std::printf("\nRESULT: %s\n", ok ? "PASS (bit-exact)" : "FAIL");
         return ok ? 0 : 1;

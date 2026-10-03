@@ -36,6 +36,8 @@ class IR:
                     out.append(n['shift_' + axis])
         if t == 'interval_select':
             out += n['functions']
+        if t == 'find_top_surface':
+            out += [n['density'], n['upper_bound']]
         if t == 'spline':
             out += spline_coords(n['spline'])
         return list(dict.fromkeys(out))
@@ -70,6 +72,8 @@ class IR:
             d += ' ' + n['kind']
         elif t in ('shift_a', 'shift_b', 'shift'):
             d += ' ' + n['noise']
+        elif t == 'find_top_surface':
+            d += ' lower_bound=%d cell_height=%d' % (n['lower_bound'], n['cell_height'])
         elif t == 'blended_noise':
             d += ' xz=%r y=%r xzf=%r yf=%r smear=%r' % tuple(f64(n[k]) for k in ('xz_scale', 'y_scale', 'xz_factor', 'y_factor', 'smear_scale_multiplier'))
         d += '  axes=%d range=[%.6g, %.6g]' % (n['axes'], f32(n['range'][0]), f32(n['range'][1]))

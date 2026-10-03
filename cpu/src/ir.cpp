@@ -135,6 +135,9 @@ IR load_ir(const std::string& path) {
             n.type = NodeType::Slice; n.axis = parse_axis(j["axis"]); n.coord = j["coord"]; n.in = j["in"];
         } else if (t == "blend_density") {
             n.type = NodeType::BlendDensity; n.in = j["in"];
+        } else if (t == "find_top_surface") {
+            n.type = NodeType::FindTopSurface; n.density = j["density"]; n.upper_bound = j["upper_bound"];
+            n.lower_bound = j["lower_bound"]; n.cell_height = j["cell_height"];
         } else {
             throw std::runtime_error("unsupported IR node type " + t);
         }

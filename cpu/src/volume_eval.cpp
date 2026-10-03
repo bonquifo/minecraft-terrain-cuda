@@ -306,8 +306,206 @@ void VolumeEvaluator::sample(int id, const Volume& v, float* out) {
         case NodeType::BlendDensity:
             sample(n.in, v, out);   // empty blender: identity
             return;
+        case NodeType::FindTopSurface: {
+            // compileSampler wraps the sampler in SliceFunction.YSampler(sampler, 0).
+            if (!(v.sy == 1 && v.miny == 0)) {
+                Volume iv{v.sx, 1, v.sz, v.minx, 0, v.minz, v.stx, v.sty, v.stz};
+                std::vector<float> ib(static_cast<size_t>(iv.size()));
+                sample(id, iv, ib.data());
+                for (int z = 0; z < v.sz; ++z)
+                    for (int x = 0; x < v.sx; ++x)
+                        std::fill(out + v.index(x, 0, z), out + v.index(x, 0, z) + v.sy, ib[static_cast<size_t>(iv.index(x, 0, z))]);
+                return;
+            }
+            sample(n.upper_bound, v, out);
+            int index = 0;
+            for (int z = 0; z < v.sz; ++z)
+                for (int x = 0; x < v.sx; ++x, ++index) out[index] = find_surface_from(n, v.bx(x), v.bz(z), out[index]);
+            return;
+        }
     }
     throw std::runtime_error("unhandled node type");
+}
+
+float VolumeEvaluator::find_surface_from(const Node& n, int x, int z, float upper_bound) {
+    float q = upper_bound / static_cast<float>(n.cell_height);
+    int top = mth_floor(static_cast<double>(q)) * n.cell_height;
+    if (top <= n.lower_bound) return static_cast<float>(n.lower_bound);
+    for (int probe = top; probe >= n.lower_bound; probe -= n.cell_height)
+        if (point(n.density, x, probe, z) > 0.0f) return static_cast<float>(probe);
+    return static_cast<float>(n.lower_bound);
+}
+
+float VolumeEvaluator::spline_point(const Spline& s, int x, int y, int z) {
+    if (s.constant) return s.k;
+    float input = point(s.coord, x, y, z);
+    int start = find_interval_start(s.locations, input);
+    int last = static_cast<int>(s.locations.size()) - 1;
+    if (start < 0) return linear_extend(input, s.locations, spline_point(s.values.front(), x, y, z), s.derivatives, 0);
+    if (start == last) return linear_extend(input, s.locations, spline_point(s.values[static_cast<size_t>(last)], x, y, z), s.derivatives, last);
+    float x1 = s.locations[static_cast<size_t>(start)], x2 = s.locations[static_cast<size_t>(start) + 1];
+    float t = (input - x1) / (x2 - x1);
+    float d1 = s.derivatives[static_cast<size_t>(start)], d2 = s.derivatives[static_cast<size_t>(start) + 1];
+    float y1 = spline_point(s.values[static_cast<size_t>(start)], x, y, z);
+    float y2 = spline_point(s.values[static_cast<size_t>(start) + 1], x, y, z);
+    float dx = x2 - x1, dy = y2 - y1;
+    float a = d1 * dx - dy;
+    float b = -d2 * dx + dy;
+    return mth_lerp(t, y1, y2) + t * (1.0f - t) * mth_lerp(t, a, b);
+}
+
+float VolumeEvaluator::point(int id, int x, int y, int z) {
+    const Node& n = ir_.at(id);
+    switch (n.type) {
+        case NodeType::Cache:
+        case NodeType::BlendDensity:
+            return point(n.in, x, y, z);
+        case NodeType::Constant:
+            return n.v;
+        case NodeType::Simple:
+            return n.simple == SimpleKind::BlendAlpha ? 1.0f : 0.0f;
+        case NodeType::Gradient: {
+            int c = n.axis == Axis::X ? x : (n.axis == Axis::Y ? y : z);
+            return gradient_compute(grad_[static_cast<size_t>(id)], c);
+        }
+        case NodeType::Noise: {
+            const StackRef& s = t_.noise.at(n.noise);
+            const StackLayer* layers = t_.layer_ptr(s);
+            if (n.shift_zero[0] && n.shift_zero[1] && n.shift_zero[2])
+                return stack_get(layers, s.count, t_.octaves.data(), static_cast<double>(x) * n.xz_scale, static_cast<double>(y) * n.y_scale,
+                                 static_cast<double>(z) * n.xz_scale);
+            double nx = static_cast<double>(x) * n.xz_scale + static_cast<double>(point(n.shift[0], x, y, z));
+            double ny = static_cast<double>(y) * n.y_scale;
+            if (!n.shift_zero[1]) ny = ny + static_cast<double>(point(n.shift[1], x, y, z));
+            double nz = static_cast<double>(z) * n.xz_scale + static_cast<double>(point(n.shift[2], x, y, z));
+            return stack_get(layers, s.count, t_.octaves.data(), nx, ny, nz);
+        }
+        case NodeType::ShiftA: {
+            const StackRef& s = t_.noise.at(n.noise);
+            return stack_get(t_.layer_ptr(s), s.count, t_.octaves.data(), static_cast<double>(x) * 0.25, static_cast<double>(y) * 0.0,
+                             static_cast<double>(z) * 0.25) * 4.0f;
+        }
+        case NodeType::ShiftB: {
+            const StackRef& s = t_.noise.at(n.noise);
+            return stack_get(t_.layer_ptr(s), s.count, t_.octaves.data(), static_cast<double>(z) * 0.25, static_cast<double>(x) * 0.25, 0.0) * 4.0f;
+        }
+        case NodeType::Shift: {
+            const StackRef& s = t_.noise.at(n.noise);
+            return stack_get(t_.layer_ptr(s), s.count, t_.octaves.data(), static_cast<double>(x) * 0.25, static_cast<double>(y) * 0.25,
+                             static_cast<double>(z) * 0.25) * 4.0f;
+        }
+        case NodeType::BlendedNoise: {
+            const BlendedSet& b = t_.blended.at(id);
+            double xzm = 684.412 * n.xz_scale, ym = 684.412 * n.y_scale;
+            double mxz = xzm / n.xz_factor, my = ym / n.y_factor;
+            float a = stack_get_smeared(t_.layer_ptr(b.main), b.main.count, t_.octaves.data(), static_cast<double>(x) * mxz, static_cast<double>(y) * my,
+                                        static_cast<double>(z) * mxz);
+            a = mth_clamp(a + 0.5f, 0.0f, 1.0f);
+            auto lo = [&] { return stack_get_smeared(t_.layer_ptr(b.min_limit), b.min_limit.count, t_.octaves.data(), static_cast<double>(x) * xzm,
+                                                     static_cast<double>(y) * ym, static_cast<double>(z) * xzm); };
+            auto hi = [&] { return stack_get_smeared(t_.layer_ptr(b.max_limit), b.max_limit.count, t_.octaves.data(), static_cast<double>(x) * xzm,
+                                                     static_cast<double>(y) * ym, static_cast<double>(z) * xzm); };
+            if (a == 0.0f) return lo();
+            if (a == 1.0f) return hi();
+            float l = lo();
+            float h = hi();
+            return mth_lerp(a, l, h);
+        }
+        case NodeType::Binary: {
+            const Node &L = ir_.at(n.l), &R = ir_.at(n.r);
+            const bool lc = L.type == NodeType::Constant, rc = R.type == NodeType::Constant;
+            switch (n.bin) {
+                case BinOp::Add: return point(n.l, x, y, z) + point(n.r, x, y, z);
+                case BinOp::Sub: return point(n.l, x, y, z) - point(n.r, x, y, z);
+                case BinOp::Mul: {
+                    if (lc || rc) return point(n.l, x, y, z) * point(n.r, x, y, z);
+                    float a = point(n.l, x, y, z);
+                    return a == 0.0f ? 0.0f : a * point(n.r, x, y, z);
+                }
+                case BinOp::Div: {
+                    if (lc) return L.v / point(n.r, x, y, z);
+                    if (rc) return point(n.l, x, y, z) * bin_[static_cast<size_t>(id)].inv;
+                    float a = point(n.l, x, y, z);
+                    return a == 0.0f ? 0.0f : a / point(n.r, x, y, z);
+                }
+                case BinOp::Min:
+                case BinOp::Max: {
+                    const BinaryPlan& p = bin_[static_cast<size_t>(id)];
+                    if (p.kind == BinaryPlan::PassLeft || p.kind == BinaryPlan::PassRight) return point(p.first, x, y, z);
+                    const bool is_min = n.bin == BinOp::Min;
+                    if (lc || rc) {                     // ConstMin/MaxSampler(sampler, constant): Math.min(sampler, constant)
+                        float s = point(p.first, x, y, z), c = ir_.at(p.second).v;
+                        return is_min ? java_fmin(s, c) : java_fmax(s, c);
+                    }
+                    float a = point(n.l, x, y, z);
+                    if (is_min) return a <= R.range_min ? a : java_fmin(a, point(n.r, x, y, z));
+                    return a >= R.range_max ? a : java_fmax(a, point(n.r, x, y, z));
+                }
+            }
+            break;
+        }
+        case NodeType::Unary: {
+            float v = point(n.in, x, y, z);
+            switch (n.un) {
+                case UnOp::Abs: return un_abs(v);
+                case UnOp::Square: return un_square(v);
+                case UnOp::Cube: return un_cube(v);
+                case UnOp::Sqrt: return un_sqrt(v);
+                case UnOp::HalfNegative: return un_leaky(v, 0.5f);
+                case UnOp::QuarterNegative: return un_leaky(v, 0.25f);
+                case UnOp::Reciprocal: return un_reciprocal(v);
+                case UnOp::Negate: return un_negate(v);
+                case UnOp::Squeeze: return un_squeeze(v);
+                case UnOp::Sign: return un_sign(v);
+                case UnOp::Log: throw std::runtime_error("log unsupported");
+            }
+            break;
+        }
+        case NodeType::Clamp:
+            return mth_clamp(point(n.in, x, y, z), n.fmin, n.fmax);
+        case NodeType::Lerp: {
+            float a = point(n.alpha, x, y, z);
+            if (a == 0.0f) return point(n.first, x, y, z);
+            if (a == 1.0f) return point(n.second, x, y, z);
+            float f0 = point(n.first, x, y, z);
+            float f1 = point(n.second, x, y, z);
+            return mth_lerp(a, f0, f1);
+        }
+        case NodeType::RangeChoice: {
+            float c = point(n.in, x, y, z);
+            return in_range(c, n.fmin, n.fmax) ? point(n.when_in, x, y, z) : point(n.when_out, x, y, z);
+        }
+        case NodeType::IntervalSelect: {
+            float c = point(n.in, x, y, z);
+            for (size_t k = 0; k < n.thresholds.size(); ++k)
+                if (c < n.thresholds[k]) return point(n.functions[k], x, y, z);
+            return point(n.functions.back(), x, y, z);
+        }
+        case NodeType::Spline:
+            return spline_point(*n.spline, x, y, z);
+        case NodeType::Interpolated: {
+            int xi = floor_mod(x, n.cell_xz), yi = floor_mod(y, n.cell_y), zi = floor_mod(z, n.cell_xz);
+            if (xi == 0 && yi == 0 && zi == 0) return point(n.in, x, y, z);
+            Volume cv{2, 2, 2, x - xi, y - yi, z - zi, n.cell_xz, n.cell_y, n.cell_xz};
+            float c[8];
+            sample(n.in, cv, c);
+            return mth_lerp3(static_cast<float>(xi) / static_cast<float>(n.cell_xz), static_cast<float>(yi) / static_cast<float>(n.cell_y),
+                             static_cast<float>(zi) / static_cast<float>(n.cell_xz), c[cv.index(0, 0, 0)], c[cv.index(1, 0, 0)], c[cv.index(0, 1, 0)],
+                             c[cv.index(1, 1, 0)], c[cv.index(0, 0, 1)], c[cv.index(1, 0, 1)], c[cv.index(0, 1, 1)], c[cv.index(1, 1, 1)]);
+        }
+        case NodeType::Slice: {
+            int sx = x, sy = y, sz = z;
+            if (n.axis == Axis::X) sx = n.coord;
+            else if (n.axis == Axis::Y) sy = n.coord;
+            else sz = n.coord;
+            return point(n.in, sx, sy, sz);
+        }
+        case NodeType::FindTopSurface: {
+            float ub = point(n.upper_bound, x, 0, z);
+            return find_surface_from(n, x, z, ub);
+        }
+    }
+    throw std::runtime_error("unhandled node type (point)");
 }
 
 float VolumeEvaluator::spline_eval(const Spline& s, int index, std::vector<std::vector<float>>& coords, std::vector<int>& coord_ids, const Volume& v) {

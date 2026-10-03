@@ -181,6 +181,7 @@ void bench_terrain_cpu(const Options& o, const IR& ir, const TerrainModel& tm) {
             for (int dz = 0; dz < 3; ++dz)
                 for (int dx = 0; dx < 3; ++dx) nb[dz * 3 + dx] = biomes.data() + static_cast<size_t>((z + dz) * border + x + dx) * qper;
             ChunkTerrain c;
+            if (!evals[t]) evals[t] = std::make_unique<VolumeEvaluator>(ir, ts.tables);   // a thread may have had no biome chunk
             cpu_terrain_from_biomes(ts, *evals[t], o.x0 + x, o.z0 + z, nb, c);
             std::copy(c.terrain.begin(), c.terrain.end(), terrain.begin() + static_cast<size_t>(i) * per);
         });

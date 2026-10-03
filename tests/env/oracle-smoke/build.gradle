@@ -1,0 +1,26 @@
+// Phase 0 smoke test: prove we can compile against and call vanilla 26.3 worldgen
+// code headlessly. Loom only supplies the (unobfuscated) game jar and libraries;
+// the oracle runs as a plain JVM main, no Fabric Loader or server involved.
+plugins {
+	id 'net.fabricmc.fabric-loom' version "${loom_version}"
+}
+
+loom {
+	serverOnlyMinecraftJar()
+}
+
+dependencies {
+	minecraft "com.mojang:minecraft:${project.minecraft_version}"
+}
+
+java {
+	toolchain { languageVersion = JavaLanguageVersion.of(25) }
+}
+
+tasks.register('runSmoke', JavaExec) {
+	group = 'verification'
+	description = 'Evaluate the overworld noise router via vanilla code and print a summary.'
+	classpath = sourceSets.main.runtimeClasspath
+	mainClass = 'mccuda.smoke.Smoke'
+	args = (project.findProperty('seeds') ?: '0,-4172144997902289642').toString().split(',').toList()
+}

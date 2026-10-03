@@ -1,0 +1,34 @@
+# Build outputs
+build/
+out/
+CMakeFiles/
+CMakeCache.txt
+*.exe
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+
+# Gradle / Loom (Loom keeps the game jar and decompiled sources in caches; never commit them)
+.gradle/
+run/
+logs/
+*.jar
+!**/gradle/wrapper/gradle-wrapper.jar
+
+# Game-derived data (exported router/noise parameters, generated code) and oracle dumps.
+# Legal hygiene: these are produced on the local machine from the game and never committed.
+data/
+
+# Raw profiler reports (commit exported text/CSV summaries under profiles/ instead)
+*.ncu-rep
+*.nsys-rep
+*.qdstrm
+*.sqlite
+
+# Editors
+.idea/
+*.iml
+.vscode/
+__pycache__/

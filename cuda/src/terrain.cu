@@ -253,12 +253,17 @@ __device__ int64_t tree_distance(int node, const int64_t* t) {
     return d;
 }
 
-// Climate.RTree.SubTree.search with an empty candidate (iterative DFS with an explicit stack).
-__device__ int tree_search_first_min(const int64_t* t, int64_t* out_dist) {
+// Climate.RTree.SubTree.search (iterative DFS with an explicit stack), returning the
+// first leaf in DFS order at minimal distance (L*), which is what vanilla returns for an
+// empty candidate. bound must exceed the minimal distance; then the result is L* for any
+// bound: any ancestor of L* is reached while min_d > m >= its box distance (min_d == m
+// would mean an earlier leaf at distance m), so it is entered, and L* is accepted. A tight
+// bound (the distance of a nearby quart's leaf, plus one) prunes most of the tree.
+__device__ int tree_search_first_min(const int64_t* t, int64_t bound, int64_t* out_dist) {
     struct Frame { int node; int child; };
     Frame stack[16];
     int sp = 0;
-    int64_t min_d = INT64_MAX;
+    int64_t min_d = bound;
     int closest = -1;
     // Recursive form: search(node, candidate) visits children in order, descends into a child
     // only if min_d > dist(child bbox), and accepts a leaf only if strictly closer.
@@ -287,7 +292,7 @@ __device__ int tree_search_first_min(const int64_t* t, int64_t* out_dist) {
         }
     }
     *out_dist = min_d;
-    return c_tt.tree[closest].leaf;
+    return closest >= 0 ? c_tt.tree[closest].leaf : -1;
 }
 
 __global__ void k_biome_columns(const ChunkXZ* bchunks, int nb, float* bcol) {
@@ -298,52 +303,109 @@ __global__ void k_biome_columns(const ChunkXZ* bchunks, int nb, float* bcol) {
     gen::eval_climate_columns(c_tt.rt, x, z, bcol + static_cast<size_t>(idx) * gen::kNumClimateColumns);
 }
 
+// Quarts of one biome chunk: climate targets and L* per quart. A thread walks kBiomeRun
+// quarts down one quart column and bounds each search by the previous quart's leaf.
+constexpr int kBiomeRun = 8;
+
 __global__ void k_biome_quarts(const ChunkXZ* bchunks, int nb, const float* bcol, int64_t* targets, int32_t* first_min, int64_t* min_dist) {
     const int qh = c_tt.height / 4;
     const int per = 16 * qh;
+    const int runs = (qh + kBiomeRun - 1) / kBiomeRun;
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= nb * 16 * runs) return;
+    int b = idx / (16 * runs), rem = idx % (16 * runs);
+    int col = rem & 15, run = rem >> 4;
+    int qx = col & 3, qz = col >> 2;
+    const float* cv = bcol + (static_cast<size_t>(b) * 16 + qz * 4 + qx) * gen::kNumClimateColumns;
+    int prev = -1;
+    for (int qy = run * kBiomeRun; qy < min(qh, (run + 1) * kBiomeRun); ++qy) {
+        size_t i = static_cast<size_t>(b) * per + (qy * 4 + qz) * 4 + qx;
+        int x = bchunks[b].x * 16 + qx * 4, y = c_tt.min_y + qy * 4, z = bchunks[b].z * 16 + qz * 4;
+        float clim[6];
+        gen::eval_climate(c_tt.rt, x, y, z, cv, clim);
+        int64_t* t = targets + i * 7;
+        for (int k = 0; k < 6; ++k) {
+            float v = clim[k] * 10000.0f;                          // Climate.quantizeCoord
+            int64_t qv;
+            if (v != v) qv = 0;
+            else if (v >= 9.2233720368547758e18f) qv = INT64_MAX;
+            else if (v <= -9.2233720368547758e18f) qv = INT64_MIN;
+            else qv = static_cast<int64_t>(v);
+            t[k] = qv;
+        }
+        t[6] = 0;
+        int64_t bound = INT64_MAX, d;
+        if (prev >= 0) {
+            int64_t dg = tree_distance(c_tt.leaf_node[prev], t);
+            if (dg < INT64_MAX) bound = dg + 1;
+        }
+        int leaf = tree_search_first_min(t, bound, &d);
+        if (leaf < 0) leaf = tree_search_first_min(t, INT64_MAX, &d);   // unreachable with a valid bound
+        first_min[i] = leaf;
+        min_dist[i] = d;
+        prev = leaf;
+    }
+}
+
+// Vanilla's chain order inside a biome chunk (fillBiomesFromNoise): sections of 4 quart
+// rows, then x, y, z. Position p -> quart index (qy * 4 + qz) * 4 + qx.
+__device__ __forceinline__ int chain_quart(int p) {
+    int z = p & 3, y = (p >> 2) & 3, x = (p >> 4) & 3, sy = p >> 6;
+    return ((sy * 4 + y) * 4 + z) * 4 + x;
+}
+
+// tie[p]: the previous position's L* is also at minimal distance here (only then can the
+// R-tree's last-result candidate make the result differ from L*).
+__global__ void k_biome_ties(int nb, const int64_t* targets, const int32_t* first_min, const int64_t* min_dist, uint8_t* tie) {
+    const int per = 16 * (c_tt.height / 4);
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= nb * per) return;
-    int b = idx / per, q = idx % per;
-    int qx = q & 3, qz = (q >> 2) & 3, qy = q >> 4;
-    int x = bchunks[b].x * 16 + qx * 4, y = c_tt.min_y + qy * 4, z = bchunks[b].z * 16 + qz * 4;
-    float clim[6];
-    gen::eval_climate(c_tt.rt, x, y, z, bcol + (static_cast<size_t>(b) * 16 + qz * 4 + qx) * gen::kNumClimateColumns, clim);
-    int64_t* t = targets + static_cast<size_t>(idx) * 7;
-    for (int k = 0; k < 6; ++k) {
-        float v = clim[k] * 10000.0f;                          // Climate.quantizeCoord
-        int64_t qv;
-        if (v != v) qv = 0;
-        else if (v >= 9.2233720368547758e18f) qv = INT64_MAX;
-        else if (v <= -9.2233720368547758e18f) qv = INT64_MIN;
-        else qv = static_cast<int64_t>(v);
-        t[k] = qv;
-    }
-    t[6] = 0;
-    int64_t d;
-    first_min[idx] = tree_search_first_min(t, &d);
-    min_dist[idx] = d;
+    int b = idx / per, p = idx % per;
+    if (p == 0) { tie[idx] = 0; return; }
+    size_t i = static_cast<size_t>(b) * per + chain_quart(p), ip = static_cast<size_t>(b) * per + chain_quart(p - 1);
+    tie[idx] = tree_distance(c_tt.leaf_node[first_min[ip]], targets + i * 7) == min_dist[i] ? 1 : 0;
 }
 
 // The R-tree's last-result candidate decides exact ties: the result is the candidate
-// if it is at minimal distance, otherwise the first minimal leaf in DFS order.
-__global__ void k_biome_chain(int nb, const int64_t* targets, const int32_t* first_min, const int64_t* min_dist, uint8_t* biomes) {
-    int b = blockIdx.x * blockDim.x + threadIdx.x;
-    if (b >= nb) return;
-    const int qh = c_tt.height / 4;
-    const int per = 16 * qh;
-    int prev = -1;
-    for (int sy = 0; sy < qh / 4; ++sy)
-        for (int x = 0; x < 4; ++x)
-            for (int y = 0; y < 4; ++y)
-                for (int z = 0; z < 4; ++z) {
-                    int qy = sy * 4 + y;
-                    int q = (qy * 4 + z) * 4 + x;
-                    size_t i = static_cast<size_t>(b) * per + q;
-                    int leaf = first_min[i];
-                    if (prev >= 0 && tree_distance(c_tt.leaf_node[prev], targets + i * 7) == min_dist[i]) leaf = prev;
-                    prev = leaf;
-                    biomes[i] = static_cast<uint8_t>(c_tt.leaf_biome[leaf]);
+// (the previous result) if it is at minimal distance, otherwise L*. While the previous
+// result equals the previous L*, that is decided by tie[p] alone. One warp per biome
+// chunk takes 32 chain positions at a time: if the window is in sync and has no tie,
+// every result is L*; otherwise lane 0 walks the window with the full rule.
+__global__ void k_biome_chain(int nb, const int64_t* targets, const int32_t* first_min, const int64_t* min_dist, const uint8_t* tie, uint8_t* biomes) {
+    const int warp = (blockIdx.x * blockDim.x + threadIdx.x) >> 5, lane = threadIdx.x & 31;
+    if (warp >= nb) return;
+    const int per = 16 * (c_tt.height / 4);
+    const size_t base = static_cast<size_t>(warp) * per;
+    int prev = -1, prev_lstar = -1;   // result and L* at the previous position (none before p = 0: the candidate is reset per chunk)
+    for (int p0 = 0; p0 < per; p0 += 32) {
+        const int p = p0 + lane;
+        const bool valid = p < per;
+        const size_t i = base + (valid ? chain_quart(p) : 0);
+        const int lstar = valid ? first_min[i] : -1;
+        const bool t = valid && p > 0 && tie[base + p];
+        const unsigned any_tie = __ballot_sync(0xFFFFFFFFu, t);
+        const int last = min(32, per - p0) - 1;
+        if (any_tie == 0 && prev == prev_lstar) {
+            if (valid) biomes[i] = static_cast<uint8_t>(c_tt.leaf_biome[lstar]);
+            prev = prev_lstar = __shfl_sync(0xFFFFFFFFu, lstar, last);
+        } else {
+            if (lane == 0) {
+                for (int k = 0; k <= last; ++k) {
+                    const size_t ik = base + chain_quart(p0 + k);
+                    const int ls = first_min[ik];
+                    int cur;
+                    if (prev < 0) cur = ls;
+                    else if (prev == prev_lstar && !tie[base + p0 + k]) cur = ls;
+                    else cur = tree_distance(c_tt.leaf_node[prev], targets + ik * 7) == min_dist[ik] ? prev : ls;
+                    biomes[ik] = static_cast<uint8_t>(c_tt.leaf_biome[cur]);
+                    prev = cur;
+                    prev_lstar = ls;
                 }
+            }
+            prev = __shfl_sync(0xFFFFFFFFu, prev, 0);
+            prev_lstar = __shfl_sync(0xFFFFFFFFu, prev_lstar, 0);
+        }
+    }
 }
 
 __global__ void k_zoom_squares(double* sq, float* sqf) {
@@ -910,6 +972,7 @@ struct FullTerrainGenerator::Impl {
     int* d_nb = nullptr;
     float *d_bcol = nullptr, *d_col = nullptr, *d_corners = nullptr, *d_prelim = nullptr;
     int64_t *d_targets = nullptr, *d_mindist = nullptr;
+    uint8_t* d_ties = nullptr;
     int32_t *d_firstmin = nullptr, *d_grid = nullptr;
     uint8_t *d_bbiomes = nullptr, *d_blocks = nullptr;
     int4* d_cells = nullptr;
@@ -970,7 +1033,7 @@ struct FullTerrainGenerator::Impl {
 
     ~Impl() {
         void* ptrs[] = {d_octaves, d_layers, d_tree, d_tree_children, d_leaf_biome, d_leaf_node, d_chunks, d_bchunks, d_nb, d_bcol, d_targets, d_mindist,
-                        d_firstmin, d_bbiomes, d_col, d_corners, d_grid, d_prelim, d_skip, d_cells, d_blocks, d_h0, d_h1, d_h2,
+                        d_ties, d_firstmin, d_bbiomes, d_col, d_corners, d_grid, d_prelim, d_skip, d_cells, d_blocks, d_h0, d_h1, d_h2,
                         d_axis_layers, d_axis_x, d_axis_y, d_axis_z, d_zoom_sq, d_zoom_sqf, d_grid_keys, d_grid_unique, d_grid_map, d_grid_count,
                         d_grid_vals, d_col_keys, d_col_unique, d_colmap, d_col_count};
         for (void* p : ptrs) cudaFree(p);
@@ -988,7 +1051,7 @@ struct FullTerrainGenerator::Impl {
     // n chunks needs about (sqrt(n) + 2)^2 biome chunks, scattered chunks up to 9n).
     void ensure_biome_capacity(int nbk) {
         if (nbk <= bcap) return;
-        void* old[] = {d_bchunks, d_bcol, d_targets, d_mindist, d_firstmin, d_bbiomes};
+        void* old[] = {d_bchunks, d_bcol, d_targets, d_mindist, d_firstmin, d_bbiomes, d_ties};
         for (void* p : old) cudaFree(p);
         const size_t q = static_cast<size_t>(nbk) * qper;
         check(cudaMalloc(&d_bchunks, sizeof(ChunkXZ) * nbk), "malloc");
@@ -997,6 +1060,7 @@ struct FullTerrainGenerator::Impl {
         check(cudaMalloc(&d_mindist, sizeof(int64_t) * q), "malloc");
         check(cudaMalloc(&d_firstmin, sizeof(int32_t) * q), "malloc");
         check(cudaMalloc(&d_bbiomes, q), "malloc");
+        check(cudaMalloc(&d_ties, q), "malloc");
         bcap = nbk;
     }
 
@@ -1141,8 +1205,10 @@ struct FullTerrainGenerator::Impl {
         const int tb = 128;
         auto grid = [](size_t threads, int block) { return static_cast<unsigned>((threads + block - 1) / block); };
         k_biome_columns<<<grid(static_cast<size_t>(nbk) * 16, tb), tb>>>(d_bchunks, nbk, d_bcol);
-        k_biome_quarts<<<grid(static_cast<size_t>(nbk) * qper, tb), tb>>>(d_bchunks, nbk, d_bcol, d_targets, d_firstmin, d_mindist);
-        k_biome_chain<<<grid(nbk, tb), tb>>>(nbk, d_targets, d_firstmin, d_mindist, d_bbiomes);
+        const int runs = (ir.height / 4 + kBiomeRun - 1) / kBiomeRun;
+        k_biome_quarts<<<grid(static_cast<size_t>(nbk) * 16 * runs, tb), tb>>>(d_bchunks, nbk, d_bcol, d_targets, d_firstmin, d_mindist);
+        k_biome_ties<<<grid(static_cast<size_t>(nbk) * qper, tb), tb>>>(nbk, d_targets, d_firstmin, d_mindist, d_ties);
+        k_biome_chain<<<grid(static_cast<size_t>(nbk) * 32, tb), tb>>>(nbk, d_targets, d_firstmin, d_mindist, d_ties, d_bbiomes);
         check(cudaGetLastError(), "biome kernels");
         cudaEventRecord(ev[2]);
         const int ck = n * kCols;   // upper bound of distinct corner columns

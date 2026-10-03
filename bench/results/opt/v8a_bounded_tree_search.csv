@@ -1,0 +1,4 @@
+impl,tag,mode,threads,batch,region,seed,x0,z0,rep,seconds,chunks_per_s,h2d_ms,biome_ms,noise_ms,aquifer_ms,fill_ms,surface_ms,d2h_ms,kernel_ms
+cuda-terrain,,terrain-gpu,1,4096,64,123456789,0,0,0,0.054147,75645.368,0.0865,10.1820,9.6335,1.8937,8.9405,7.5700,14.1555,38.2197
+cuda-terrain,,terrain-gpu,1,4096,64,123456789,0,0,1,0.054149,75643.552,0.0868,10.0992,9.7099,1.9016,8.9344,7.5515,14.2240,38.1966
+cuda-terrain,,terrain-gpu,1,4096,64,123456789,0,0,2,0.054219,75545.752,0.1616,10.1413,9.6389,1.9511,8.9324,7.5986,14.1591,38.2623

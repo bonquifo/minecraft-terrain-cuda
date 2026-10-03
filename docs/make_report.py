@@ -10,6 +10,7 @@ import html
 import io
 import re
 import statistics as st
+import sys
 from pathlib import Path
 
 import matplotlib
@@ -31,11 +32,15 @@ C_CPU_D = '#2f6db5'
 C_GPU = '#76b900'
 C_GPU_D = '#4f7d00'
 STAGE_COLORS = {'biome': '#8e6bd8', 'noise': '#3c9fd6', 'aquifer': '#29b3a6', 'fill': '#f2a33a', 'surface': '#e0605a', 'd2h': '#b0b0b0'}
+STAGE_SHORT = {'biome': 'biomes', 'noise': 'noise', 'aquifer': 'aquifer cells', 'fill': 'fill', 'surface': 'material rules', 'd2h': 'copy to host'}
 STAGE_NAMES = {'biome': 'biomes', 'noise': 'noise corners', 'aquifer': 'aquifer cells', 'fill': 'density + aquifer fill',
                'surface': 'material rules', 'd2h': 'device-to-host copy'}
 
 TICKS = {'v0': 'naive', 'v1': 'floor/\nwrap', 'v2': 'axis\ntables', 'v3': 'zoom\ntable', 'v4': 'grid\ndedupe', 'v5': 'column\ndedupe',
          'v6': 'zoom\nfilter', 'v7': 'inline\nrules', 'v8': 'biome\nsearch', 'v9': 'pipeline'}
+
+SERIES_TOKENS = {C_VAN: '--c-van', C_VAN_D: '--c-van2', C_CPU: '--c-cpu', C_CPU_D: '--c-cpu2', C_GPU: '--c-gpu', C_GPU_D: '--c-gpu2',
+                 '#1f77b4': '--ink'}
 
 # Sentinel colours replaced by CSS variables in the inline SVG (light/dark themes).
 INK, AXIS, GRID = '#010203', '#010204', '#010205'
@@ -114,7 +119,7 @@ def style(theme):
     axis = AXIS if theme == 'svg' else '#6e7781'
     grid = GRID if theme == 'svg' else '#d8dee4'
     plt.rcParams.update({
-        'font.family': ['Segoe UI', 'DejaVu Sans', 'sans-serif'], 'font.size': 10.5, 'svg.fonttype': 'none',
+        'font.family': ['DejaVu Sans', 'sans-serif'], 'font.size': 10.5, 'svg.fonttype': 'none',
         'text.color': ink, 'axes.labelcolor': ink, 'xtick.color': ink, 'ytick.color': ink, 'axes.edgecolor': axis,
         'axes.titlecolor': ink, 'axes.titleweight': 'semibold', 'axes.titlesize': 12, 'axes.titlelocation': 'left',
         'grid.color': grid, 'grid.linewidth': 0.8, 'axes.grid': True, 'axes.axisbelow': True,
@@ -133,6 +138,9 @@ def to_svg(fig):
     s = s[s.index('<svg'):]
     s = re.sub(r'<metadata>.*?</metadata>', '', s, flags=re.S)
     s = s.replace(INK, 'var(--ink)').replace(AXIS, 'var(--axis)').replace(GRID, 'var(--grid)')
+    for hexcol, token in SERIES_TOKENS.items():   # series colours follow the page theme
+        s = s.replace(hexcol, 'var(%s)' % token)
+    s = re.sub(r"font-family: [^;\"]*", 'font-family: var(--font-chart)', s)   # charts use the page's text face
     s = re.sub(r'(<svg[^>]*?) width="[^"]*" height="[^"]*"', r'\1', s, count=1)   # responsive
     return s
 
@@ -216,9 +224,9 @@ def chart_stages(theme, D):
         w = S[k]
         ax.barh([0], [w], left=left, color=STAGE_COLORS[k], height=0.55)
         if w / total > 0.07:
-            ax.text(left + w / 2, 0, '%s\n%.1f ms' % (STAGE_NAMES[k], w), ha='center', va='center', fontsize=8.6, color='white')
+            ax.text(left + w / 2, 0, '%s\n%.1f ms' % (STAGE_SHORT[k], w), ha='center', va='center', fontsize=8.6, color='white')
         else:
-            ax.annotate('%s %.1f ms' % (STAGE_NAMES[k], w), xy=(left + w / 2, 0.28), xytext=(left + w / 2, 0.52), ha='center', va='bottom', fontsize=8.6,
+            ax.annotate('%s %.1f ms' % (STAGE_SHORT[k], w), xy=(left + w / 2, 0.28), xytext=(left + w / 2, 0.52), ha='center', va='bottom', fontsize=8.6,
                         arrowprops={'arrowstyle': '-', 'color': ink, 'lw': 0.8})
         left += w
     ax.set_ylim(-0.4, 0.8)
@@ -294,35 +302,73 @@ def chart_latency(theme, D):
 
 
 # ---- html -------------------------------------------------------------------------------
+FONTS = ('<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
+         '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100..125,500..800'
+         '&family=JetBrains+Mono:wght@400;600&family=Source+Sans+3:ital,wght@0,400;0,600;0,700;1,400&display=swap">')
+
 CSS = '''
-:root{--bg:#ffffff;--card:#f6f8fa;--ink:#1f2328;--muted:#59636e;--axis:#6e7781;--grid:#d8dee4;--line:#d0d7de;--accent:#4f7d00;--accent2:#76b900;--bad:#cf222e}
-@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#0d1117;--card:#161b22;--ink:#e6edf3;--muted:#9198a1;--axis:#8b949e;--grid:#30363d;--line:#30363d;--accent:#8fd400;--accent2:#76b900;--bad:#ff7b72}}
-:root[data-theme="dark"]{--bg:#0d1117;--card:#161b22;--ink:#e6edf3;--muted:#9198a1;--axis:#8b949e;--grid:#30363d;--line:#30363d;--accent:#8fd400;--accent2:#76b900;--bad:#ff7b72}
+/* Layout: one reading column on a stone-grey ground, a sticky section bar, charts at column width.
+   Colour: terrain strata (stone, moss, deepslate); series colours shared with the charts. */
+:root{
+  --bg:#f3f5f1; --surface:#ffffff; --raised:#e9eee6; --ink:#16201a; --muted:#56635a; --line:#d4dcd2;
+  --accent:#2e7334; --accent-ink:#ffffff; --accent-soft:#e1eedc; --axis:#748178; --grid:#dde4db;
+  --c-van:#a3aba5; --c-van2:#68736c; --c-cpu:#6c9bd2; --c-cpu2:#2f69a8; --c-gpu:#74ad3d; --c-gpu2:#3d7a22;
+  --font-display:"Archivo","Arial Narrow",system-ui,sans-serif; --font-body:"Source Sans 3","Segoe UI",system-ui,-apple-system,sans-serif;
+  --font-mono:"JetBrains Mono",ui-monospace,Consolas,monospace; --font-chart:"Source Sans 3","Segoe UI",system-ui,sans-serif;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#101512; --surface:#161d18; --raised:#1d2620; --ink:#e3e9e3; --muted:#9aa89f; --line:#2a352e;
+  --accent:#8fcf68; --accent-ink:#0f1a10; --accent-soft:#1c2c1d; --axis:#8a978e; --grid:#252f28;
+  --c-van:#6f7a73; --c-van2:#adb7b0; --c-cpu:#3f6fa6; --c-cpu2:#86b5ea; --c-gpu:#4f8a2c; --c-gpu2:#97d56c; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#101512; --surface:#161d18; --raised:#1d2620; --ink:#e3e9e3; --muted:#9aa89f; --line:#2a352e;
+  --accent:#8fcf68; --accent-ink:#0f1a10; --accent-soft:#1c2c1d; --axis:#8a978e; --grid:#252f28;
+  --c-van:#6f7a73; --c-van2:#adb7b0; --c-cpu:#3f6fa6; --c-cpu2:#86b5ea; --c-gpu:#4f8a2c; --c-gpu2:#97d56c; color-scheme:dark}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--ink);font:15.5px/1.6 "Segoe UI",system-ui,-apple-system,Roboto,Helvetica,Arial,sans-serif}
-main{max-width:980px;margin:0 auto;padding:32px 16px 64px}
-h1{font-size:30px;line-height:1.2;margin:0 0 6px}
-h2{font-size:21px;margin:44px 0 10px;padding-top:8px;border-top:1px solid var(--line)}
-h3{font-size:16.5px;margin:26px 0 6px}
-p,li{color:var(--ink)}
-.sub{color:var(--muted);margin:0 0 22px}
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin:18px 0 8px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
-.card .v{font-size:27px;font-weight:650;letter-spacing:-.01em;color:var(--accent)}
-.card .k{color:var(--muted);font-size:13.5px}
-figure{margin:18px 0 6px}
+html{scroll-behavior:smooth;scroll-padding-top:64px}
+@media (prefers-reduced-motion: reduce){html{scroll-behavior:auto}}
+body{margin:0;background:var(--bg);color:var(--ink);font:400 16.5px/1.62 var(--font-body);-webkit-font-smoothing:antialiased}
+.page{max-width:960px;margin:0 auto;padding:0 20px 72px}
+header.hero{padding-block:44px 22px}
+.eyebrow{font:600 12.5px/1.4 var(--font-mono);letter-spacing:.06em;text-transform:uppercase;color:var(--accent)}
+h1{font:780 clamp(30px,5.4vw,50px)/1.05 var(--font-display);font-stretch:112%;letter-spacing:-.015em;margin:12px 0 14px;text-wrap:balance}
+h2{font:760 27px/1.15 var(--font-display);font-stretch:108%;margin:0 0 12px;text-wrap:balance}
+h3{font:700 18px/1.3 var(--font-display);font-stretch:104%;margin:30px 0 8px}
+p,li{max-width:68ch}
+.lede{font-size:18.5px;color:var(--muted);margin:0 0 20px}
+.spec{display:flex;flex-wrap:wrap;gap:8px 18px;margin:0;padding:12px 0 0;border-top:1px solid var(--line);font:400 13px/1.5 var(--font-mono);color:var(--muted)}
+.spec b{color:var(--ink);font-weight:600}
+.kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:26px 0 8px}
+@media (max-width:760px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.kpi{background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:14px 16px 13px}
+.kpi .v{font:760 34px/1.05 var(--font-display);font-stretch:106%;font-variant-numeric:tabular-nums;color:var(--accent)}
+.kpi .k{font-size:14px;line-height:1.35;color:var(--muted);margin-top:6px}
+nav.sections{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:var(--bg);border-bottom:1px solid var(--line);margin:22px -20px 0;padding:0 20px}
+nav.sections ul{display:flex;gap:4px;list-style:none;margin:0;padding:8px 0;overflow-x:auto;scrollbar-width:none}
+nav.sections a{display:block;white-space:nowrap;padding:5px 11px;border-radius:99px;font:600 13.5px/1.3 var(--font-body);color:var(--muted);text-decoration:none}
+nav.sections a:hover{background:var(--raised);color:var(--ink)}
+a{color:var(--accent);text-underline-offset:2px}
+a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+section{padding-block:40px 6px;border-bottom:1px solid var(--line)}
+section:last-of-type{border-bottom:0}
+figure{margin:22px 0 10px;background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:16px 16px 12px}
 figure svg{width:100%;height:auto;display:block}
-figcaption{color:var(--muted);font-size:13.5px;margin-top:4px}
-table{border-collapse:collapse;width:100%;margin:10px 0 6px;font-size:14px}
-th,td{text-align:left;padding:6px 10px;border-bottom:1px solid var(--line);vertical-align:top}
-th{color:var(--muted);font-weight:600}
-td.n,th.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
-.ok{color:var(--accent);font-weight:600}
-.badge{display:inline-block;padding:1px 8px;border-radius:99px;background:var(--card);border:1px solid var(--line);font-size:12.5px;color:var(--muted)}
-code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:13px;background:var(--card);padding:1px 5px;border-radius:5px}
-pre{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px;overflow-x:auto;font-size:13px}
-.note{border-left:3px solid var(--accent2);padding:6px 12px;background:var(--card);border-radius:0 8px 8px 0}
-.wrap{overflow-x:auto}
+figcaption{color:var(--muted);font-size:14px;line-height:1.5;margin-top:8px;max-width:none}
+.wrap{overflow-x:auto;margin:12px 0 8px;border:1px solid var(--line);border-radius:6px;background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:14.5px}
+th,td{text-align:left;padding:7px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+tr:last-child td{border-bottom:0}
+th{font:600 12px/1.3 var(--font-mono);letter-spacing:.04em;text-transform:uppercase;color:var(--muted);background:var(--raised)}
+td.n,th.n{text-align:right;font-family:var(--font-mono);font-size:13.5px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.ok{display:inline-block;padding:0 7px;border-radius:4px;background:var(--accent-soft);color:var(--accent);font:600 12px/1.6 var(--font-mono)}
+code{font-family:var(--font-mono);font-size:.86em;background:var(--raised);padding:1px 5px;border-radius:4px}
+pre{background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:14px 16px;overflow-x:auto;font:400 13px/1.6 var(--font-mono)}
+pre code{background:none;padding:0}
+.note{border-left:3px solid var(--accent);padding:10px 14px;background:var(--accent-soft);border-radius:0 6px 6px 0;max-width:none}
+ul{padding-left:22px}
+li{margin:4px 0}
+.notes h3{font-size:19px;margin-top:32px}
+footer{margin-top:34px;color:var(--muted);font-size:14px}
 '''
 
 
@@ -486,20 +532,25 @@ def main():
     now = datetime.date.today().isoformat()
 
     H = []
-    H.append('<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">')
-    H.append('<title>Minecraft Terrain on CUDA</title><style>%s</style></head><body><main>' % CSS)
+    H.append('<title>Minecraft Terrain on CUDA</title>%s<style>%s</style><div class="page">' % (FONTS, CSS))
+    H.append('<header class="hero"><div class="eyebrow">Minecraft Java 26.3 &middot; overworld TERRAIN step &middot; RTX 5090</div>')
     H.append('<h1>Minecraft terrain generation on CUDA, bit for bit</h1>')
-    H.append('<p class="sub">Minecraft Java Edition 26.3, overworld, full TERRAIN step (biomes, density, aquifers, material rules incl. ore veins; no carvers) '
-             'on an RTX 5090, compared with vanilla on a Ryzen 9 9950X. Every GPU and CPU-port output in this report is bit-identical to vanilla. Generated %s by '
-             '<code>docs/make_report.py</code> from <code>bench/results/</code>.</p>' % now)
-    H.append('<div class="cards">')
+    H.append('<p class="lede">Biomes, density with every cave noise, aquifers and the material rules with ore veins, reimplemented as CUDA kernels. '
+             'Every block, biome and density value matches vanilla exactly, and the GPU produces chunks %s\u00d7 faster than vanilla on one thread.</p>'
+             % '{:,.0f}'.format(sp1))
+    H.append('<p class="spec"><span><b>chunk</b> 16 \u00d7 384 \u00d7 16 blocks, y \u221264 to 319</span><span><b>seed</b> 123456789</span>'
+             '<span><b>GPU</b> RTX 5090</span><span><b>CPU</b> Ryzen 9 9950X, 32 threads</span><span><b>vanilla</b> 26.3 on JDK 25</span></p>')
+    H.append('<div class="kpis">')
     for v, k in (('%s×' % '{:,.0f}'.format(sp1), 'faster than vanilla on 1 thread'), ('%.0f×' % sp32, 'faster than vanilla on all 32 threads'),
                  ('%s' % '{:,.0f}'.format(gpu['mean']), 'chunks/s end to end on the GPU (%.1f µs per chunk)' % (1e6 / gpu['mean'])),
                  ('0', 'mismatches in %s values compared with vanilla' % '{:,}'.format(vanilla_checked + sum(v['blocks'] for v in verify)))):
-        H.append('<div class="card"><div class="v">%s</div><div class="k">%s</div></div>' % (v, k))
-    H.append('</div>')
+        H.append('<div class="kpi"><div class="v">%s</div><div class="k">%s</div></div>' % (v, k))
+    H.append('</div></header>')
+    H.append('<nav class="sections" aria-label="Sections"><ul>' + ''.join('<li><a href="#%s">%s</a></li>' % (i, t) for i, t in (
+        ('results', 'Results'), ('correctness', 'Correctness'), ('speedup', 'How it got fast'), ('core', 'Core pipeline'), ('method', 'Method'),
+        ('scope', 'Scope'), ('notes', 'Engineering notes'), ('reproduce', 'Reproduce'))) + '</ul></nav>')
 
-    H.append('<h2>Results</h2>')
+    H.append('<section id="results"><h2>Results</h2>')
     H.append(figure(charts['throughput'], 'Same work everywhere: biomes for the region plus a one-chunk border, then the noise fill with aquifers and the material rules for '
                     'every chunk of the region. Vanilla is driven through its own private methods (<code>doCreateBiomes</code>, <code>doFill</code>, '
                     '<code>buildSurface</code>) on real ProtoChunks. "End to end" includes host preparation and copying every block back to pinned host memory.'))
@@ -516,7 +567,7 @@ def main():
     H.append(figure(charts['latency'], 'For a handful of chunks the fixed cost of a call (%s kernel launches including two radix sorts) dominates: one chunk takes '
                     '%.2f ms, against %.1f ms for vanilla on one thread. Median of 20 calls each.' % ('%.0f' % launches if launches else 'about 50', one['ms'], D['van1_ms'])))
 
-    H.append('<h2>Correctness</h2>')
+    H.append('</section><section id="correctness"><h2>Correctness</h2>')
     H.append('<p class="note">Bit-exactness is the definition of done: every block state, every biome and every density value is compared for equality with vanilla, '
              'with no tolerance. Device code is compiled with <code>-fmad=false -prec-div=true -prec-sqrt=true -ftz=false</code>, never fast-math; '
              'every optimization below preserves the exact IEEE operations or replaces them by integer work with a written proof that the result is identical.</p>')
@@ -535,9 +586,9 @@ def main():
              'start it empty.</p>' % (len(ties), '{:,}'.format(int(ties[0]['quarts'])), min(tie_leaf), max(tie_leaf), min(tie_biome), max(tie_biome),
                                      '{:,}'.format(int(round(1e6 / st.mean(tie_biome), -2)))))
     H.append('<p>The engine behaviours that exactness depends on (two evaluation semantics, the R-tree tie rule, aquifer prefill, heightmap order in '
-             'the material rules) are written up in <a href="ENGINE_NOTES.md">ENGINE_NOTES.md</a>.</p>')
+             'the material rules) are written up in the <a href="#notes">engineering notes</a> below.</p>')
 
-    H.append('<h2>How the speedup was found</h2>')
+    H.append('</section><section id="speedup"><h2>How the speedup was found</h2>')
     H.append('<p>Starting from a straight port of the reference code to CUDA (v0), each step below was chosen from profiling data, measured right after the change at '
              'the same configuration, and re-verified on the full oracle set before it was committed.</p>')
     H.append(figure(charts['ladder'], 'v9 is measured with two pipeline slots and batch 2048 (same region); its stage bars come from a one-slot run of the same code.'))
@@ -572,7 +623,7 @@ blocked it. Enqueueing each download after the following upload fixed it (Nsight
         H.append('<h3>Final kernel profile</h3><p>Nsight Systems, region 64×64 in one batch of 4,096 chunks, average over repetitions:</p>')
         H.append(table(['kernel', 'ms', 'share', 'launches', 'what it does'], nsys_rows, num_cols=(1, 2, 3)))
 
-    H.append('<h2>The core pipeline (Phase 3 baseline)</h2><p>The density-plus-fill core without aquifers or surface, as first ported. Vanilla here is '
+    H.append('</section><section id="core"><h2>The core pipeline (Phase 3 baseline)</h2><p>The density-plus-fill core without aquifers or surface, as first ported. Vanilla here is '
              '<code>NoiseChunk</code> + <code>sampleVolume(finalDensity)</code> + the substance decision per block, aquifers disabled; the GPU column uses the '
              'first, naive kernels, which were kept as the baseline implementation <code>cuda-v0</code>.</p>')
     H.append(table(['configuration', 'chunks/s', 'ms/chunk', 'CV', 'min', 'max', 'n', ''], core_rows, num_cols=(1, 2, 3, 4, 5, 6)))
@@ -580,7 +631,7 @@ blocked it. Enqueueing each download after the following upload fixed it (Nsight
              '%.0f%% of the work; biomes, aquifers and the material rules are the larger part, which is why the full step was the target.</p>'
              % (1000.0 / vcore[1]['mean'], 1000.0 / van1['mean'], 100.0 * van1['mean'] / vcore[1]['mean']))
 
-    H.append('<h2>Method</h2><ul>')
+    H.append('</section><section id="method"><h2>Method</h2><ul>')
     H.append('<li><b>Machine:</b> AMD Ryzen 9 9950X (16 cores / 32 threads), 128 GB RAM, NVIDIA GeForce RTX 5090 (170 SMs, 32 GB, driver 591.86, WDDM), '
              'Windows 11. CUDA 13.1, MSVC 14.44, JDK 25.0.4.1. GPU state sampled right after the GPU runs: %s.</li>' % html.escape(gpu_state))
     H.append('<li><b>Clocks unlocked</b> (locking needs administrator rights); variance is reported instead: CV over repetitions and, for the headline '
@@ -594,7 +645,7 @@ blocked it. Enqueueing each download after the following upload fixed it (Nsight
              'per stage, and targeted ablation builds. Nsight Compute could not collect counters: it reports <code>ERR_NVGPUCTRPERM</code> (counter access '
              'is admin-only on this machine and was not changed).</li></ul>')
 
-    H.append('<h2>Scope and limits</h2><ul>')
+    H.append('</section><section id="scope"><h2>Scope and limits</h2><ul>')
     H.append('<li><b>Included:</b> biomes (multi-noise climate, exact R-tree search including its last-result tie rule), final density with all cave '
              'noises, NoiseBasedAquifer, doFill, the material rules with ore veins, clay bands, eroded-badlands and frozen-ocean extensions, and the heightmap '
              'updates they depend on.</li>')
@@ -610,14 +661,29 @@ blocked it. Enqueueing each download after the following upload fixed it (Nsight
              ('python bench\\run_all.py', 'every measurement in this report'),
              ('python docs\\make_report.py', 'this page and docs/img/*.png')]
     width = max(len(c) for c, _ in steps) + 2
-    H.append('<h2>Reproduce</h2><pre>%s</pre>' % '\n'.join(html.escape(c.ljust(width) + '# ' + d) for c, d in steps))
-    H.append('</main></body></html>')
+    H.append('</section><section id="notes" class="notes"><h2>Engineering notes</h2>%s' % engine_notes_html())
+    H.append('</section><section id="reproduce"><h2>Reproduce</h2><pre>%s</pre>' % '\n'.join(html.escape(c.ljust(width) + '# ' + d) for c, d in steps))
+    H.append('<footer>Generated %s by <code>docs/make_report.py</code> from the measurements in <code>bench/results/</code>.</footer>' % now)
+    H.append('</section></div>')
+    page = '\n'.join(H)
     out = ROOT / 'docs' / 'report.html'
-    out.write_text('\n'.join(H), encoding='utf-8')
+    out.write_text('<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+                   '</head><body>\n' + page + '\n</body></html>\n', encoding='utf-8')
+    if len(sys.argv) > 2 and sys.argv[1] == '--artifact':   # body-only variant for hosts that add the document skeleton
+        Path(sys.argv[2]).write_text(page + '\n', encoding='utf-8')
     write_readme(van1, van32, D, gpu, kern, sp1, sp32, spc, cpu1x, tests, vanilla_checked, verify, ladder)
     print('wrote', out, 'and', IMG)
     print('headline: vanilla1 %.1f, vanilla32 %.1f, cpu1 %.1f, cpu32 %.1f, gpu e2e %.0f, kernels %.0f; speedups %.0fx / %.1fx' % (
         van1['mean'], van32['mean'], D['cpu_terrain'][1]['mean'], D['cpu_terrain'][32]['mean'], gpu['mean'], kern['mean'], sp1, sp32))
+
+
+def engine_notes_html():
+    import markdown
+    text = (ROOT / 'docs' / 'ENGINE_NOTES.md').read_text(encoding='utf-8')
+    text = re.sub(r'^# .*\n', '', text, count=1)                 # the section has its own heading
+    text = re.sub(r'^## ', '### ', text, flags=re.M)
+    out = markdown.markdown(text, extensions=['tables'])
+    return out.replace('<table>', '<div class="wrap"><table>').replace('</table>', '</table></div>')
 
 
 def write_readme(van1, van32, D, gpu, kern, sp1, sp32, spc, cpu1x, tests, total_checked, verify, ladder):

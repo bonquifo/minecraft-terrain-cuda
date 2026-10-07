@@ -59,9 +59,11 @@ import net.minecraft.world.level.levelgen.material.rule.MaterialRule;
  * worldgen workers. The R-tree's per-thread last-result cache is left alone
  * (live-server behaviour) unless reset=1. With dump=1 the region's final blocks
  * of the last repetition are written for cross-checking (needs threads=1 and
- * reset=1 to be comparable with our generators).
+ * reset=1 to be comparable with our generators). With timeline=1 the finish time
+ * of every chunk in the last repetition is written (<tag>_timeline_t<n>.csv: phase 1
+ * per biome chunk, phase 2 per region chunk, ms since the repetition started).
  *
- * args: threads=<n> region=<chunks per side> reps=<n> warmup=<n> seed=<long> x0=<chunk> z0=<chunk> tag=<name> [reset=1] [dump=1]
+ * args: threads=<n> region=<chunks per side> reps=<n> warmup=<n> seed=<long> x0=<chunk> z0=<chunk> tag=<name> [reset=1] [dump=1] [timeline=1]
  */
 final class TerrainBench {
     static void run(Main.Vanilla v, List<String> args, Path outDir) throws Exception {
@@ -74,6 +76,7 @@ final class TerrainBench {
         String tag = VanillaBench.strArg(args, "tag", "vanilla-terrain");
         boolean reset = VanillaBench.intArg(args, "reset", 0) != 0;
         boolean dump = VanillaBench.intArg(args, "dump", 0) != 0;
+        boolean timeline = VanillaBench.intArg(args, "timeline", 0) != 0;
 
         TerrainModel model = new TerrainModel(v);
         Path scratch = Files.createTempFile("mccuda_terrain", ".json");
@@ -110,9 +113,12 @@ final class TerrainBench {
         ExecutorService pool = Executors.newFixedThreadPool(threads);
         List<double[]> rows = new ArrayList<>();
         ConcurrentHashMap<Long, ProtoChunk> chunks = new ConcurrentHashMap<>();
+        long[] biomeDone = new long[border * border], chunkDone = new long[interior];   // System.nanoTime() per chunk, last rep wins
+        long lastStart = 0;
         for (int rep = -warmup; rep < reps; rep++) {
             chunks.clear();
             long start = System.nanoTime();
+            lastStart = start;
             // phase 1: biomes for the region plus border
             AtomicInteger next = new AtomicInteger();
             List<Future<?>> futures = new ArrayList<>();
@@ -126,6 +132,7 @@ final class TerrainBench {
                         doCreateBiomes.invoke(generator, Blender.empty(), rs, proto);
                         proto.setPersistedStatus(ChunkStatus.BIOMES);
                         chunks.put(ChunkPos.pack(pos.x(), pos.z()), proto);
+                        biomeDone[i] = System.nanoTime();
                     }
                     return null;
                 }));
@@ -151,6 +158,7 @@ final class TerrainBench {
                             doFill.invoke(generator, nc, center);
                             buildSurface.invoke(generator, center, nc, rs, biomeManager, possible, materialRule);
                         }
+                        chunkDone[i] = System.nanoTime();
                     }
                     return null;
                 }));
@@ -183,6 +191,17 @@ final class TerrainBench {
             }
             Path f = outDir.resolve(tag + "_terrain.u16");
             Files.write(f, terrain.array());
+            System.out.println("bench-terrain: wrote " + f);
+        }
+        if (timeline) {
+            Path f = outDir.resolve(tag + "_timeline_t" + threads + ".csv");
+            try (Writer w = Files.newBufferedWriter(f, StandardCharsets.UTF_8)) {
+                w.write("phase,index,cx,cz,done_ms\n");
+                for (int i = 0; i < border * border; i++)
+                    w.write(String.format("1,%d,%d,%d,%.4f%n", i, x0 - 1 + i % border, z0 - 1 + i / border, (biomeDone[i] - lastStart) / 1e6));
+                for (int i = 0; i < interior; i++)
+                    w.write(String.format("2,%d,%d,%d,%.4f%n", i, x0 + i % region, z0 + i / region, (chunkDone[i] - lastStart) / 1e6));
+            }
             System.out.println("bench-terrain: wrote " + f);
         }
         Path csv = outDir.resolve(tag + "_t" + threads + ".csv");

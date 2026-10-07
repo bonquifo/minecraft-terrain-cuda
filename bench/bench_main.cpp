@@ -7,6 +7,8 @@
 //     --version V     core-gpu kernel version (default 0) --verify F  compare the region with a vanilla dump (u16)
 //     --pageable      GPU output to pageable instead of pinned host memory
 //     --streams S     GPU batches in flight (default 2: transfers overlap the next batch's kernels)
+//     --timeline F    terrain-gpu/-cpu: when each chunk of the last repetition finished (CSV, same layout as the vanilla bench)
+//     --topdown F     terrain-gpu: top block, height and water floor of every column of the region (binary, for the videos)
 //     --out FILE      CSV to append to (default bench/results/bench.csv)   --tag NAME
 //
 // Region semantics match the vanilla bench (oracle bench-terrain): every chunk of
@@ -18,6 +20,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -41,7 +44,7 @@ using namespace mcc;
 namespace {
 
 struct Options {
-    std::string mode = "terrain-gpu", data = MCCUDA_DATA_DIR, out = "bench/results/bench.csv", tag, verify;
+    std::string mode = "terrain-gpu", data = MCCUDA_DATA_DIR, out = "bench/results/bench.csv", tag, verify, timeline, topdown;
     int region = 16, x0 = 0, z0 = 0, reps = 5, warmup = 2, batch = 256, threads = 1, version = 0, streams = 2;
     int64_t seed = 123456789;
     bool pinned = true;
@@ -125,6 +128,44 @@ void report(const Options& o, const std::string& impl, const std::vector<Row>& r
     write_rows(o, impl, rows);
 }
 
+// Top-down view of a generated region for the videos: per column (row-major over the
+// region's blocks) the highest non-air block, and under fluid the first solid block.
+// Layout: "MCTD", int32 version, region, x0, z0, min_y; then 8 bytes per column:
+// u8 top, u8 floor, u8 depth (clamped), u8 0, int16 top_y, int16 floor_y.
+void write_topdown(const Options& o, const IR& ir, const TerrainModel& tm, const std::vector<cuda::ChunkXZ>& order, const uint8_t* out, size_t per) {
+    const int side = o.region * 16;
+    std::vector<uint8_t> rec(static_cast<size_t>(side) * side * 8, 0);
+    auto air = [&](int s) { return tm.palette[static_cast<size_t>(s)].air; };
+    auto fluid = [&](int s) { return tm.palette[static_cast<size_t>(s)].fluid; };
+    for (size_t i = 0; i < order.size(); ++i) {
+        const uint8_t* b = out + i * per;
+        const int rx = (order[i].x - o.x0) * 16, rz = (order[i].z - o.z0) * 16;
+        for (int z = 0; z < 16; ++z)
+            for (int x = 0; x < 16; ++x) {
+                int y = ir.height - 1;
+                while (y > 0 && air(b[(y * 16 + z) * 16 + x])) --y;
+                const int top = b[(y * 16 + z) * 16 + x], top_y = y;
+                while (y > 0 && fluid(b[(y * 16 + z) * 16 + x])) --y;
+                const int floor_s = b[(y * 16 + z) * 16 + x];
+                uint8_t* r = rec.data() + (static_cast<size_t>(rz + z) * side + rx + x) * 8;
+                r[0] = static_cast<uint8_t>(top);
+                r[1] = static_cast<uint8_t>(floor_s);
+                r[2] = static_cast<uint8_t>(std::min(255, top_y - y));
+                const int16_t ty = static_cast<int16_t>(ir.min_y + top_y), fy = static_cast<int16_t>(ir.min_y + y);
+                std::memcpy(r + 4, &ty, 2);
+                std::memcpy(r + 6, &fy, 2);
+            }
+    }
+    std::ofstream f(o.topdown, std::ios::binary);
+    const int32_t head[5] = {1, o.region, o.x0, o.z0, ir.min_y};
+    f.write("MCTD", 4);
+    f.write(reinterpret_cast<const char*>(head), sizeof head);
+    f.write(reinterpret_cast<const char*>(rec.data()), static_cast<std::streamsize>(rec.size()));
+    std::printf("topdown: wrote %s (%d x %d columns)\n", o.topdown.c_str(), side, side);
+}
+
+void write_timeline_header(std::ofstream& f) { f << "phase,index,cx,cz,done_ms\n"; }
+
 void bench_terrain_gpu(const Options& o, const IR& ir, const TerrainModel& tm) {
     const size_t per = static_cast<size_t>(16 * 16 * ir.height);
     const int tile = std::max(1, static_cast<int>(std::sqrt(static_cast<double>(o.batch))));
@@ -144,6 +185,21 @@ void bench_terrain_gpu(const Options& o, const IR& ir, const TerrainModel& tm) {
             r.seconds = now_s() - s;
             if (rep >= 0) rows.push_back(r);
         }
+        if (!o.timeline.empty()) {   // chunk done = its batch's download done
+            std::vector<double> done = gen.last_batch_done_ms();
+            std::ofstream f(o.timeline);
+            write_timeline_header(f);
+            for (size_t i = 0; i < order.size(); ++i) {
+                const int idx = (order[i].z - o.z0) * o.region + (order[i].x - o.x0);
+                char line[96];
+                std::snprintf(line, sizeof line, "2,%d,%d,%d,%.4f\n", idx, order[i].x, order[i].z, done[i / static_cast<size_t>(o.batch)]);
+                f << line;
+            }
+            char line[64];
+            std::snprintf(line, sizeof line, "9,-1,0,0,%.4f\n", rows.back().seconds * 1000.0);   // host wall time of the call
+            f << line;
+            std::printf("timeline: wrote %s (%zu batches)\n", o.timeline.c_str(), done.size());
+        }
         cuda::BiomeTieStats ts = gen.biome_tie_stats();
         const double q = ts.quarts ? static_cast<double>(ts.quarts) : 1.0;
         std::printf("biome ties: the R-tree's last-result rule changed the leaf of %lld of %lld quart lookups (%.2f ppm), the biome of %lld (%.2f ppm)\n",
@@ -158,6 +214,7 @@ void bench_terrain_gpu(const Options& o, const IR& ir, const TerrainModel& tm) {
         }
     }
     report(o, "cuda-terrain", rows);
+    if (!o.topdown.empty()) write_topdown(o, ir, tm, order, out, per);
     if (!o.verify.empty()) {
         std::vector<uint8_t> rm(bytes);
         for (size_t i = 0; i < order.size(); ++i) {
@@ -178,6 +235,7 @@ void bench_terrain_cpu(const Options& o, const IR& ir, const TerrainModel& tm) {
     std::vector<uint8_t> biomes(static_cast<size_t>(border) * border * qper);
     std::vector<uint16_t> terrain(per * nchunks);
     std::vector<Row> rows;
+    std::vector<double> biome_done(static_cast<size_t>(border) * border), chunk_done(static_cast<size_t>(nchunks));   // last rep wins
     for (int rep = -o.warmup; rep < o.reps; ++rep) {
         Row r;
         double s = now_s();
@@ -185,6 +243,7 @@ void bench_terrain_cpu(const Options& o, const IR& ir, const TerrainModel& tm) {
         parallel_for(o.threads, border * border, [&](int t, int i) {
             if (!evals[t]) evals[t] = std::make_unique<VolumeEvaluator>(ir, ts.tables);
             cpu_chunk_biomes(ts, *evals[t], o.x0 - 1 + i % border, o.z0 - 1 + i / border, biomes.data() + static_cast<size_t>(i) * qper);
+            biome_done[static_cast<size_t>(i)] = (now_s() - s) * 1000.0;
         });
         double mid = now_s();
         parallel_for(o.threads, nchunks, [&](int t, int i) {
@@ -196,6 +255,7 @@ void bench_terrain_cpu(const Options& o, const IR& ir, const TerrainModel& tm) {
             if (!evals[t]) evals[t] = std::make_unique<VolumeEvaluator>(ir, ts.tables);   // a thread may have had no biome chunk
             cpu_terrain_from_biomes(ts, *evals[t], o.x0 + x, o.z0 + z, nb, c);
             std::copy(c.terrain.begin(), c.terrain.end(), terrain.begin() + static_cast<size_t>(i) * per);
+            chunk_done[static_cast<size_t>(i)] = (now_s() - s) * 1000.0;
         });
         r.seconds = now_s() - s;
         r.t.biome_ms = (mid - s) * 1000.0;
@@ -203,6 +263,20 @@ void bench_terrain_cpu(const Options& o, const IR& ir, const TerrainModel& tm) {
         if (rep >= 0) rows.push_back(r);
     }
     report(o, "cpu-port-terrain", rows);
+    if (!o.timeline.empty()) {
+        std::ofstream f(o.timeline);
+        write_timeline_header(f);
+        char line[96];
+        for (int i = 0; i < border * border; ++i) {
+            std::snprintf(line, sizeof line, "1,%d,%d,%d,%.4f\n", i, o.x0 - 1 + i % border, o.z0 - 1 + i / border, biome_done[static_cast<size_t>(i)]);
+            f << line;
+        }
+        for (int i = 0; i < nchunks; ++i) {
+            std::snprintf(line, sizeof line, "2,%d,%d,%d,%.4f\n", i, o.x0 + i % o.region, o.z0 + i / o.region, chunk_done[static_cast<size_t>(i)]);
+            f << line;
+        }
+        std::printf("timeline: wrote %s\n", o.timeline.c_str());
+    }
     if (!o.verify.empty() && verify_region(o, terrain, per)) throw std::runtime_error("CPU output differs from vanilla");
 }
 
@@ -278,6 +352,8 @@ int main(int argc, char** argv) {
             else if (a == "--seed") o.seed = std::stoll(next());
             else if (a == "--pageable") o.pinned = false;
             else if (a == "--streams") o.streams = std::stoi(next());
+            else if (a == "--timeline") o.timeline = next();
+            else if (a == "--topdown") o.topdown = next();
             else throw std::runtime_error("unknown argument " + a);
         }
         const std::string ver = "26.3";

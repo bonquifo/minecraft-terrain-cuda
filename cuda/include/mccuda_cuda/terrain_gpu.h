@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <vector>
 
 #include "mccuda/ir.h"
 #include "mccuda/terrain_model.h"
@@ -41,6 +42,10 @@ public:
     // biomes_out (u8 per quart) and aquifer_out (u8 per block, after doFill) are optional.
     void generate(const ChunkXZ* chunks, int count, uint8_t* terrain_out, uint8_t* biomes_out, uint8_t* aquifer_out, TerrainTiming* timing = nullptr);
     BiomeTieStats biome_tie_stats();
+    // When each batch of the last generate() call finished, including its copy to the
+    // host (CUDA events, ms after the call started); batch k holds chunks
+    // [k * max_batch_chunks, (k + 1) * max_batch_chunks).
+    std::vector<double> last_batch_done_ms() const;
 
 private:
     struct Impl;

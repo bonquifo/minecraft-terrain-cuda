@@ -8,6 +8,7 @@ import csv
 import datetime
 import html
 import io
+import json
 import re
 import statistics as st
 import sys
@@ -411,6 +412,11 @@ figure.code figcaption{margin:0;padding:9px 14px 11px;border-top:1px solid var(-
 .cp,.cpf{color:var(--code-pre)} .m,.mi,.mf,.mh,.mo,.il,.kc{color:var(--code-num)} .err{color:inherit;background:none}
 .lead{margin-bottom:0}
 h4{font:700 16px/1.35 var(--font-display);font-stretch:104%;margin:30px 0 4px}
+figure.video{padding:12px}
+figure.video video{display:block;width:100%;height:auto;border-radius:4px;background:#101411}
+.videos{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin:14px 0 6px}
+.videos figure{margin:0}
+@media (max-width:640px){.videos{grid-template-columns:minmax(0,1fr)}}
 '''
 
 
@@ -589,7 +595,7 @@ def main():
         H.append('<div class="kpi"><div class="v">%s</div><div class="k">%s</div></div>' % (v, k))
     H.append('</div></header>')
     H.append('<nav class="sections" aria-label="Sections"><ul>' + ''.join('<li><a href="#%s">%s</a></li>' % (i, t) for i, t in (
-        ('results', 'Results'), ('correctness', 'Correctness'), ('speedup', 'How it got fast'), ('core', 'Core pipeline'), ('method', 'Method'),
+        ('results', 'Results'), ('videos', 'Videos'), ('correctness', 'Correctness'), ('speedup', 'How it got fast'), ('core', 'Core pipeline'), ('method', 'Method'),
         ('scope', 'Scope'), ('notes', 'Engineering notes'), ('reproduce', 'Reproduce'))) + '</ul></nav>')
 
     H.append('<section id="results"><h2>Results</h2>')
@@ -614,6 +620,7 @@ def main():
     H.append(figure(charts['latency'], 'For a handful of chunks the fixed cost of a call (%s kernel launches including two radix sorts) dominates: one chunk takes '
                     '%.2f ms, against %.1f ms for vanilla on one thread. Median of 20 calls each.' % ('%.0f' % launches if launches else 'about 50', one['ms'], D['van1_ms'])))
 
+    H.append(videos_section())
     H.append('</section><section id="correctness"><h2>Correctness</h2>')
     H.append('<p class="note">Bit-exactness is the definition of done: every block state, every biome and every density value is compared for equality with vanilla, '
              'with no tolerance. Device code is compiled with <code>-fmad=false -prec-div=true -prec-sqrt=true -ftz=false</code>, never fast-math; '
@@ -780,6 +787,51 @@ def main():
         van1['mean'], van32['mean'], D['cpu_terrain'][1]['mean'], D['cpu_terrain'][32]['mean'], gpu['mean'], kern['mean'], sp1, sp32))
 
 
+def videos_section():
+    """The recorded generation videos (bench/make_videos.py), when they exist."""
+    vj = ROOT / 'docs' / 'videos' / 'videos.json'
+    if not vj.exists():
+        return ''
+    m = json.loads(vj.read_text(encoding='utf-8'))
+    reg = m['region']
+
+    def rate(k):
+        return '{:,.0f}'.format(m[k]['chunks'] / (m[k]['end_ms'] / 1000.0))
+
+    def secs(k):
+        ms = m[k]['end_ms']
+        return '%.1f s' % (ms / 1000.0) if ms >= 1000 else '%.0f ms' % ms if ms >= 100 else '%.1f ms' % ms
+
+    def video(name, caption, autoplay=False):
+        attrs = 'autoplay muted loop playsinline controls preload="auto"' if autoplay else 'muted playsinline controls preload="none"'
+        return ('<figure class="video"><video src="videos/%s.mp4" poster="videos/%s.jpg" %s aria-label="%s"></video><figcaption>%s</figcaption></figure>'
+                % (name, name, attrs, html.escape(caption.split('.')[0]), caption))
+
+    out = ['</section><section id="videos"><h2>Watch it generate</h2>']
+    out.append('<p>Each implementation generated the same %d\u00d7%d-chunk region (chunk %d, %d, seed 123456789: badlands, a river, beach, ocean and '
+               'grassland) while logging the moment every chunk was finished. The videos replay those logs at real speed over a top-down map of the '
+               'generated blocks: highest block per column, water shaded by depth, relief from the height field. The map is the same for every '
+               'implementation because the output is: for this region the GPU\'s blocks were compared with a vanilla dump, 100,663,296 blocks with 0 '
+               'mismatches. These are single recorded runs; the benchmark tables above are the reference measurements.</p>'
+               % (reg['size'], reg['size'], reg['x0'], reg['z0']))
+    out.append(video('race', 'All five on one clock. Single-threaded vanilla needs %s, 32 threads %s, the GPU %s, including the copy back to the '
+                             'host. The CPU port finishes in %s on one thread and %s on 32.' % (secs('van1'), secs('van32'), secs('gpu'), secs('cpu1'), secs('cpu32')),
+                     autoplay=True))
+    out.append('<div class="videos">')
+    out.append(video('vanilla-1-thread', 'Vanilla 26.3 on one thread: %s, %s chunks/s. Phase 1 computes the biomes of the region and its border, then '
+                                         'chunks finish one by one in order.' % (secs('van1'), rate('van1'))))
+    out.append(video('vanilla-32-threads', 'Vanilla 26.3 on 32 threads: %s, %s chunks/s. Chunks land out of order as the worker threads pick them up.'
+                     % (secs('van32'), rate('van32'))))
+    out.append(video('cpu-port-1-thread', 'The C++ reference port on one thread: %s, %s chunks/s.' % (secs('cpu1'), rate('cpu1'))))
+    out.append(video('cpu-port-32-threads', 'The C++ reference port on 32 threads: %s, %s chunks/s.' % (secs('cpu32'), rate('cpu32'))))
+    out.append(video('gpu', 'RTX 5090: %s for the whole region in four batches of 256 chunks, done within the first video frame. A replay at 1/%d '
+                            'speed follows, showing each batch land.' % (secs('gpu'), m['gpu_slowdown'])))
+    out.append(video('gpu-region-128', 'RTX 5090 at its benchmark batch size: a 128\u00d7128 region (16,384 chunks, chunk 400, \u2212300) in %s, %s '
+                                       'chunks/s, eight batches of 2,048, then a replay at 1/%d speed.' % (secs('gpu128'), rate('gpu128'), m['gpu128_slowdown'])))
+    out.append('</div>')
+    return '\n'.join(out)
+
+
 def engine_notes_html():
     import markdown
     text = (ROOT / 'docs' / 'ENGINE_NOTES.md').read_text(encoding='utf-8')
@@ -805,6 +857,11 @@ material rules including ore veins) at **{r(gpu)} chunks/s**, which is **{sp1:,.
 vanilla on one thread and **{sp32:.0f}x** vanilla on all 32 threads of a Ryzen 9 9950X.
 
 ![Throughput](docs/img/throughput.png)
+
+[![The same region generated by every implementation, real time](docs/videos/race.jpg)](docs/videos/race.mp4)
+
+*Click for the video: the same 32\u00d732-chunk region generated by every implementation, replayed at real speed from
+each run's per-chunk finish times ([all videos](docs/videos/)).*
 
 | Full TERRAIN step (no carvers) | chunks/s | ms per chunk | vs vanilla 1 thread |
 |---|---:|---:|---:|

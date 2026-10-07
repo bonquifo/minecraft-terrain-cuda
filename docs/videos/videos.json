@@ -1,0 +1,33 @@
+{
+ "van1": {
+  "end_ms": 9112.0427,
+  "chunks": 1024
+ },
+ "van32": {
+  "end_ms": 609.928,
+  "chunks": 1024
+ },
+ "cpu1": {
+  "end_ms": 13086.0025,
+  "chunks": 1024
+ },
+ "cpu32": {
+  "end_ms": 855.8177,
+  "chunks": 1024
+ },
+ "gpu": {
+  "end_ms": 18.4582,
+  "chunks": 1024
+ },
+ "gpu128": {
+  "end_ms": 170.2313,
+  "chunks": 16384
+ },
+ "region": {
+  "x0": 462,
+  "z0": -296,
+  "size": 32
+ },
+ "gpu_slowdown": 160,
+ "gpu128_slowdown": 25
+}

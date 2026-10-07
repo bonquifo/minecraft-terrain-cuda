@@ -983,6 +983,7 @@ struct Slot {
     cudaStream_t stream = nullptr;
     cudaEvent_t ev[9] = {};
     bool pending = false;
+    int batch_index = -1;          // position of the batch in the current generate() call
     // the batch whose download is (or will be) enqueued
     int n = 0;
     uint8_t *terrain_out = nullptr, *biomes_out = nullptr, *aquifer_out = nullptr;
@@ -1097,6 +1098,8 @@ struct FullTerrainGenerator::Impl {
     std::vector<std::unique_ptr<Slot>> slots;
     size_t next_slot = 0;
     unsigned long long* d_tie_overrides = nullptr;   // biome quarts where the R-tree's last-result rule changed the leaf
+    cudaEvent_t t0_event = nullptr;                  // start of the current generate() call
+    std::vector<double> batch_done_ms;               // per batch of the current call: download finished
     uint64_t quarts_searched = 0;
 
     Impl(const IR& ir_, const TerrainModel& tm_, int mb, int nslots) : ir(ir_), tm(tm_), max_batch(mb) {
@@ -1108,6 +1111,7 @@ struct FullTerrainGenerator::Impl {
         if (tm.palette.size() > 64 || tm.biomes.size() > 128) throw std::runtime_error("palette/biome tables too large");
         check(cudaDeviceSetLimit(cudaLimitStackSize, 16 * 1024), "stack limit");
         for (int i = 0; i < std::max(nslots, 1); ++i) slots.push_back(std::make_unique<Slot>(mb, rows, per, qper, cells));
+        check(cudaEventCreate(&t0_event), "event");
         check(cudaMalloc(&d_tie_overrides, 2 * sizeof(unsigned long long)), "malloc");
         check(cudaMemset(d_tie_overrides, 0, 2 * sizeof(unsigned long long)), "memset");
         check(cudaMalloc(&d_zoom_sq, sizeof(double) * 8192), "malloc zoom table");
@@ -1123,6 +1127,7 @@ struct FullTerrainGenerator::Impl {
         void* ptrs[] = {d_octaves, d_layers, d_tree, d_tree_children, d_leaf_biome, d_leaf_node, d_axis_layers, d_axis_y, d_zoom_sq, d_zoom_sqf,
                         d_tie_overrides};
         for (void* p : ptrs) cudaFree(p);
+        if (t0_event) cudaEventDestroy(t0_event);
     }
 
     template <typename T>
@@ -1344,6 +1349,12 @@ struct FullTerrainGenerator::Impl {
         if (!S.pending) return;
         check(cudaEventSynchronize(S.ev[8]), "sync");
         S.pending = false;
+        if (S.batch_index >= 0 && S.batch_index < static_cast<int>(batch_done_ms.size())) {
+            float ms = 0;
+            check(cudaEventElapsedTime(&ms, t0_event, S.ev[8]), "event timing");
+            batch_done_ms[static_cast<size_t>(S.batch_index)] = ms;
+        }
+        S.batch_index = -1;
         if (!tm_) return;
         float t[8];
         for (int i = 0; i < 8; ++i) check(cudaEventElapsedTime(&t[i], S.ev[i], S.ev[i + 1]), "event timing");
@@ -1371,6 +1382,8 @@ BiomeTieStats FullTerrainGenerator::biome_tie_stats() {
     return {static_cast<int64_t>(impl_->quarts_searched), static_cast<int64_t>(n[0]), static_cast<int64_t>(n[1])};
 }
 
+std::vector<double> FullTerrainGenerator::last_batch_done_ms() const { return impl_->batch_done_ms; }
+
 void FullTerrainGenerator::set_seed(int64_t seed) {
     impl_->collect_all(nullptr);
     impl_->set_seed(seed);
@@ -1380,7 +1393,10 @@ void FullTerrainGenerator::generate(const ChunkXZ* chunks, int count, uint8_t* t
     auto t0 = std::chrono::steady_clock::now();
     Impl& I = *impl_;
     Slot* prev = nullptr;
-    for (int off = 0; off < count; off += I.max_batch) {
+    I.batch_done_ms.assign(static_cast<size_t>((count + I.max_batch - 1) / I.max_batch), 0.0);
+    check(cudaEventRecord(I.t0_event, I.slots[0]->stream), "event");
+    int batch = 0;
+    for (int off = 0; off < count; off += I.max_batch, ++batch) {
         int n = std::min(I.max_batch, count - off);
         Slot& S = *I.slots[I.next_slot];
         I.next_slot = (I.next_slot + 1) % I.slots.size();
@@ -1389,6 +1405,7 @@ void FullTerrainGenerator::generate(const ChunkXZ* chunks, int count, uint8_t* t
             prev = nullptr;
         }
         I.collect(S, timing);   // the slot's previous batch must be finished before its buffers are reused
+        S.batch_index = batch;
         I.run_batch(S, chunks + off, n, terrain_out + static_cast<size_t>(off) * I.per, biomes_out ? biomes_out + static_cast<size_t>(off) * I.qper : nullptr,
                     aquifer_out ? aquifer_out + static_cast<size_t>(off) * I.per : nullptr);
         if (prev) I.download(*prev);   // after this batch's uploads (see download())

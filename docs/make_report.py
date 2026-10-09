@@ -341,7 +341,7 @@ CSS = '''
   --c-van:#a3aba5; --c-van2:#68736c; --c-cpu:#6c9bd2; --c-cpu2:#2f69a8; --c-gpu:#74ad3d; --c-gpu2:#3d7a22;
   --font-display:"Archivo","Arial Narrow",system-ui,sans-serif; --font-body:"Source Sans 3","Segoe UI",system-ui,-apple-system,sans-serif;
   --font-mono:"JetBrains Mono",ui-monospace,Consolas,monospace; --font-chart:"Source Sans 3","Segoe UI",system-ui,sans-serif;
-  --code-bg:#fbfcfa; --code-kw:#7b3fa0; --code-type:#1f6a86; --code-fn:#8a5800; --code-str:#a63b1e; --code-com:#6c776f; --code-num:#2e7334; --code-pre:#9b3f7a;
+  --video-bg:#101411; --code-bg:#fbfcfa; --code-kw:#7b3fa0; --code-type:#1f6a86; --code-fn:#8a5800; --code-str:#a63b1e; --code-com:#6c776f; --code-num:#2e7334; --code-pre:#9b3f7a;
 }
 @media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
   --bg:#101512; --surface:#161d18; --raised:#1d2620; --ink:#e3e9e3; --muted:#9aa89f; --line:#2a352e;
@@ -396,7 +396,6 @@ pre code{background:none;padding:0}
 .note{border-left:3px solid var(--accent);padding:10px 14px;background:var(--accent-soft);border-radius:0 6px 6px 0;max-width:none}
 ul{padding-left:22px}
 li{margin:4px 0}
-.notes h3{font-size:19px;margin-top:32px}
 footer{margin-top:34px;color:var(--muted);font-size:14px}
 figure.code{padding:0;overflow:hidden;background:var(--code-bg)}
 .code-head{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:7px 14px;border-bottom:1px solid var(--line);background:var(--raised);
@@ -413,15 +412,19 @@ figure.code figcaption{margin:0;padding:9px 14px 11px;border-top:1px solid var(-
 .lead{margin-bottom:0}
 h4{font:700 16px/1.35 var(--font-display);font-stretch:104%;margin:30px 0 4px}
 figure.video{padding:12px}
-figure.video video,figure.video img{display:block;width:100%;height:auto;border-radius:4px;background:#101411}
+figure.video video,figure.video img{display:block;width:100%;height:auto;border-radius:4px;background:var(--video-bg)}
 .videos{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin:14px 0 6px}
 .videos figure{margin:0}
 @media (max-width:640px){.videos{grid-template-columns:minmax(0,1fr)}}
+.videos.three{grid-template-columns:repeat(3,minmax(0,1fr))}
+@media (max-width:860px){.videos.three{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:560px){.videos.three{grid-template-columns:minmax(0,1fr)}}
+table.names td:first-child{white-space:nowrap}
 '''
 
 
-def table(headers, rows, num_cols=()):
-    h = '<div class="wrap"><table><thead><tr>' + ''.join('<th%s>%s</th>' % (' class="n"' if i in num_cols else '', x) for i, x in enumerate(headers)) + '</tr></thead><tbody>'
+def table(headers, rows, num_cols=(), cls=''):
+    h = '<div class="wrap"><table%s><thead><tr>' % (' class="%s"' % cls if cls else '') + ''.join('<th%s>%s</th>' % (' class="n"' if i in num_cols else '', x) for i, x in enumerate(headers)) + '</tr></thead><tbody>'
     for r in rows:
         h += '<tr>' + ''.join('<td%s>%s</td>' % (' class="n"' if i in num_cols else '', x) for i, x in enumerate(r)) + '</tr>'
     return h + '</tbody></table></div>'
@@ -528,10 +531,16 @@ def main():
     core_rows = [srow('Vanilla 26.3 core, 1 thread', vcore[1]), srow('Vanilla 26.3 core, 32 threads', vcore[32]),
                  srow('CPU port core, 1 thread', ccore[1]), srow('CPU port core, 32 threads', ccore[32]),
                  srow('RTX 5090 core (naive v0 kernels), end to end', gcore)]
+    why = {'v0': 'reference code, ported directly', 'v1': 'the same results from integer work on the IEEE bits',
+           'v2': 'the same IEEE operations, computed once per distinct coordinate', 'v3': 'the same expression, tabulated over its 8 × 1,024 inputs',
+           'v4': 'every value is a pure function of position and semantics', 'v5': 'every value is a pure function of position',
+           'v6': 'proven error bound; near ties take the FP64 comparison', 'v7': 'code placement only',
+           'v8': 'any bound above the minimum yields the same first minimal leaf', 'v9': 'scheduling only'}
     ladder_rows = []
     for i, l in enumerate(ladder):
         prev = ladder[i - 1]['rate'] if i else None
-        ladder_rows.append([l['short'], l['name'], fmt_rate(l['rate']), ('%+.0f%%' % ((l['rate'] / prev - 1) * 100)) if prev else '', '%.1f×' % (l['rate'] / ladder[0]['rate'])])
+        ladder_rows.append([l['short'], l['name'], fmt_rate(l['rate']), ('%+.0f%%' % ((l['rate'] / prev - 1) * 100)) if prev else '', '%.1f×' % (l['rate'] / ladder[0]['rate']),
+                            why[l['short']]])
     def test_note(t):
         if t['name'].startswith('zoom'):
             return 'GPU self-test against the plain FP64 BiomeManager zoom (not a vanilla comparison); ' + html.escape(t['note'])
@@ -551,8 +560,16 @@ def main():
     if nsys_csv.exists():
         nr = [r for r in read_csv(nsys_csv) if float(r['launches_per_batch']) >= 1]   # per-generator setup kernels are not per batch
         launches = sum(float(r['launches_per_batch']) for r in nr)
+        small = [r for r in nr if float(r['pct']) < 1.0]   # listed together: 14 kernels, a few percent in all
         for r in nr:
-            nsys_rows.append([html.escape(r['kernel']), '%.3f' % float(r['avg_ms']), '%.1f%%' % float(r['pct']), '%g' % float(r['launches_per_batch']), r['what']])
+            if r not in small:
+                nsys_rows.append(['<code>%s</code>' % html.escape(r['kernel']), '%.3f' % float(r['avg_ms']), '%.1f%%' % float(r['pct']),
+                                  '%g' % float(r['launches_per_batch']), r['what']])
+        if small:
+            nsys_rows.append(['%d more kernels' % len(small), '%.3f' % sum(float(r['avg_ms']) for r in small), '%.1f%%' % sum(float(r['pct']) for r in small),
+                              '%g' % sum(float(r['launches_per_batch']) for r in small),
+                              'y-independent inputs and axis records per distinct column, R-tree tie flags, the eroded-badlands pass, aquifer skip heights, '
+                              'and the dedupe (keys, CUB radix sort and scan, run heads, scatters)'])
     inline_cut = (1 - ladder[7]['stages']['surface'] / ladder[6]['stages']['surface']) * 100
     abl = read_csv(OPT / 'ablations.csv')
     abl_rows = [[a['experiment'], a['code_state'], '<code>%s</code>' % a['kernel'], '%.2f' % float(a['baseline_ms']), '%.2f' % float(a['ablated_ms']),
@@ -579,90 +596,156 @@ def main():
     cpu1x = D['cpu_terrain'][1]['mean'] / van1['mean']
     now = datetime.date.today().isoformat()
 
+    g = load_json(ROOT / 'docs' / 'videos' / 'ingame.json')
+    in_game = g['control_takes']['vanilla_raw']['verify'] if g else None   # first structures-off control take
+    compared = vanilla_checked + sum(v['blocks'] for v in verify) + (in_game['blocks'] + in_game['biomes'] if in_game else 0)
+
     H = []
     H.append('<title>Minecraft Terrain on CUDA</title>%s<style>%s</style><div class="page">' % (FONTS, CSS))
     H.append('<header class="hero"><div class="eyebrow">Minecraft Java 26.3 &middot; overworld TERRAIN step &middot; RTX 5090</div>')
     H.append('<h1>Minecraft terrain generation on CUDA, bit for bit</h1>')
     H.append('<p class="lede">Biomes, density with every cave noise, aquifers and the material rules with ore veins, reimplemented as CUDA kernels. '
-             'Every block, biome and density value matches vanilla exactly, and the GPU produces chunks %s\u00d7 faster than vanilla on one thread.</p>'
-             % '{:,.0f}'.format(sp1))
-    H.append('<p class="spec"><span><b>chunk</b> 16 \u00d7 384 \u00d7 16 blocks, y \u221264 to 319</span><span><b>seed</b> 123456789</span>'
+             'Every block, biome and density value matches vanilla exactly, checked offline against the game\'s own values and inside the running game.</p>')
+    H.append('<p class="spec"><span><b>chunk</b> 16 × 384 × 16 blocks, y −64 to 319</span><span><b>seed</b> 123456789</span>'
              '<span><b>GPU</b> RTX 5090</span><span><b>CPU</b> Ryzen 9 9950X, 32 threads</span><span><b>vanilla</b> 26.3 on JDK 25</span></p>')
     H.append('<div class="kpis">')
     for v, k in (('%s×' % '{:,.0f}'.format(sp1), 'faster than vanilla on 1 thread'), ('%.0f×' % sp32, 'faster than vanilla on all 32 threads'),
                  ('%s' % '{:,.0f}'.format(gpu['mean']), 'chunks/s end to end on the GPU (%.1f µs per chunk)' % (1e6 / gpu['mean'])),
-                 ('0', 'mismatches in %s values compared with vanilla' % '{:,}'.format(vanilla_checked + sum(v['blocks'] for v in verify)))):
+                 ('0', 'mismatches in %s values compared with vanilla' % '{:,}'.format(compared))):
         H.append('<div class="kpi"><div class="v">%s</div><div class="k">%s</div></div>' % (v, k))
     H.append('</div></header>')
     H.append('<nav class="sections" aria-label="Sections"><ul>' + ''.join('<li><a href="#%s">%s</a></li>' % (i, t) for i, t in (
-        ('results', 'Results'), ('videos', 'Videos'), ('correctness', 'Correctness'), ('speedup', 'How it got fast'), ('core', 'Core pipeline'), ('method', 'Method'),
-        ('scope', 'Scope'), ('notes', 'Engineering notes'), ('reproduce', 'Reproduce'))) + '</ul></nav>')
+        ('results', 'Results'), ('videos', 'Videos'), ('correctness', 'Correctness'), ('exactness', 'Exactness'), ('speedup', 'How it got fast'),
+        ('method', 'Method and scope'), ('reproduce', 'Reproduce'))) + '</ul></nav>')
 
+    # ---- results
     H.append('<section id="results"><h2>Results</h2>')
-    H.append(figure(charts['throughput'], 'Same work everywhere: biomes for the region plus a one-chunk border, then the noise fill with aquifers and the material rules for '
-                    'every chunk of the region. Vanilla is driven through its own private methods (<code>doCreateBiomes</code>, <code>doFill</code>, '
-                    '<code>buildSurface</code>) on real ProtoChunks. "End to end" includes host preparation and copying every block back to pinned host memory.'))
+    H.append(figure(charts['throughput'], 'Same work everywhere: biomes for the region plus a one-chunk border, then the noise fill with aquifers and the '
+                    'material rules for every chunk. Vanilla runs its own private methods on real ProtoChunks (see <a href="#method">Method</a>). End to end '
+                    'includes host preparation and copying every block back to pinned host memory.'))
     H.append(table(['configuration', 'chunks/s', 'ms/chunk', 'CV', 'min', 'max', 'n', 'notes'], bench_rows, num_cols=(1, 2, 3, 4, 5, 6)))
-    H.append('<p>The GPU is <b>%s×</b> faster than single-threaded vanilla, <b>%.0f×</b> faster than vanilla using every core of a 16-core desktop CPU, and '
-             '<b>%.0f×</b> faster than our own C++ port on 32 threads. That C++ port is the debugging reference (an interpreter of the density graph, '
-             'written for clarity and verified first), not a tuned CPU implementation: on one thread it runs at %.2f× vanilla\'s JIT-compiled speed. '
-             'CV is the coefficient of variation over all timed repetitions (warm-up repetitions excluded).</p>' % ('{:,.0f}'.format(sp1), sp32, spc, cpu1x))
-    H.append('<p class="lead">Vanilla is timed through its own code path. The inner loop of the vanilla benchmark makes the calls that '
-             '<code>buildTerrain</code> makes before carvers, on real ProtoChunks whose biomes were generated in phase 1:</p>')
-    H.append(snippet('oracle/src/main/java/mccuda/oracle/TerrainBench.java', r'// phase 2: noise fill', r'buildSurface\.invoke',
-                     'One NoiseChunk per chunk, <code>doFill</code> with aquifers on, then <code>buildSurface</code> with a BiomeManager over the 3\u00d73 '
-                     'neighbourhood. The GPU does exactly this work; nothing is skipped on either side.', lang='java'))
+    H.append('<p>Against our own C++ port on 32 threads the GPU is <b>%.0f×</b> faster. The port is the debugging reference, an interpreter of the density '
+             'graph written for clarity and verified first, not a tuned CPU implementation: on one thread it runs at %.2f× vanilla\'s JIT-compiled speed. '
+             'CV is the coefficient of variation over all timed repetitions; warm-up repetitions are excluded.</p>' % (spc, cpu1x))
     H.append(figure(charts['scaling'], 'Vanilla reaches %.0f%% of linear scaling at 16 threads (one per core); SMT adds another %.0f%% at 32. The GPU line is the '
                     'end-to-end rate.' % (eff16, smt)))
-    H.append(figure(charts['stages'], 'CUDA event times per stage when one batch runs at a time. With two pipeline slots the copy overlaps the next batch\'s kernels.'))
-    H.append(figure(charts['batch'], 'Throughput needs a few thousand chunks in flight. Two slots hide the device-to-host copy behind the next batch\'s kernels.'))
+    H.append('<h3>Inside the GPU run</h3>')
+    H.append(figure(charts['stages'], 'CUDA event times per stage for one batch of %s chunks run on its own, without overlap.' % '{:,}'.format(D['final_stage_batch'])))
+    H.append(figure(charts['batch'], 'Throughput needs a few thousand chunks in flight. With two slots the copy back overlaps the next batch\'s kernels '
+                    '(v9 in <a href="#speedup">How it got fast</a>).'))
     one = D['latency'][0]
     H.append(figure(charts['latency'], 'For a handful of chunks the fixed cost of a call (%s kernel launches including two radix sorts) dominates: one chunk takes '
                     '%.2f ms, against %.1f ms for vanilla on one thread. Median of 20 calls each.' % ('%.0f' % launches if launches else 'about 50', one['ms'], D['van1_ms'])))
+    H.append('<h3>The density core alone</h3>')
+    H.append('<p>The first milestone ported only the density and the block fill, without aquifers or material rules. Vanilla here is <code>NoiseChunk</code> + '
+             '<code>sampleVolume(finalDensity)</code> + the substance decision per block; the GPU row uses the first, naive kernels, kept as the baseline '
+             'implementation <code>cuda-v0</code>. On one thread vanilla spends %.2f ms per chunk on this core against %.2f ms for the whole TERRAIN step, '
+             'so the core is only %.0f%% of the work. Biomes, aquifers and the material rules are the larger part, which is why the full step was the target.</p>'
+             % (1000.0 / vcore[1]['mean'], 1000.0 / van1['mean'], 100.0 * van1['mean'] / vcore[1]['mean']))
+    H.append(table(['configuration', 'chunks/s', 'ms/chunk', 'CV', 'min', 'max', 'n', ''], core_rows, num_cols=(1, 2, 3, 4, 5, 6)))
 
-    H.append(videos_section())
+    # ---- videos
+    H.append(videos_section(load_json(ROOT / 'docs' / 'videos' / 'videos.json'), load_json(ROOT / 'docs' / 'videos' / 'flythrough.json'), g))
+
+    # ---- correctness: the evidence
     H.append('</section><section id="correctness"><h2>Correctness</h2>')
-    H.append('<p class="note">Bit-exactness is the definition of done: every block state, every biome and every density value is compared for equality with vanilla, '
-             'with no tolerance. Device code is compiled with <code>-fmad=false -prec-div=true -prec-sqrt=true -ftz=false</code>, never fast-math; '
-             'every optimization below preserves the exact IEEE operations or replaces them by integer work with a written proof that the result is identical.</p>')
+    H.append('<p class="note">Bit-exactness is the definition of done: every block state, every biome and every density value is compared for equality with '
+             'vanilla, with no tolerance. Java is strict IEEE with no fused multiply-add, so device code is compiled with '
+             '<code>-fmad=false -prec-div=true -prec-sqrt=true -ftz=false</code>, never fast-math. Every optimization keeps the exact IEEE operations or '
+             'replaces them by integer work with a written proof that the result is identical.</p>')
     H.append(snippet('CMakeLists.txt', r'add_compile_options\(\$<\$<COMPILE_LANGUAGE:CUDA>:-fmad=false>', r'--expt-relaxed-constexpr',
                      'Device flags for every CUDA file: no fused multiply-add, IEEE division and square root, denormals kept. The host side uses '
                      '<code>/fp:precise</code>, and a unit test checks that the host compiler does not contract.', lang='cmake'))
+    H.append('<p>The evidence comes in three layers, from single values to a running game.</p>')
+    H.append('<h3>Against values from the game</h3>')
     H.append('<p>The reference oracle runs the real game classes (Minecraft 26.3 server jar via Fabric Loom, on this machine only) and dumps values for 32 seeds '
              '(8 fixed, 24 random) at 18 chunks each: a 3×3 block at the origin, chunks near and far, chunks at the world border (±1,874,999) and at the '
-             '32-bit wrap points of the noise lattice, over the full build height (y = −64 to 319). <code>mccuda_tests --set full</code> (%s): </p>'
+             '32-bit wrap points of the noise lattice, over the full build height (y = −64 to 319). <code>mccuda_tests --set full</code> (%s):</p>'
              % ('<span class="ok">RESULT: PASS (bit-exact)</span>' if tests_ok else '<b>FAIL</b>'))
-    H.append(table(['level / check', 'values', 'mismatches', '', 'notes'], test_rows, num_cols=(1, 2)))
-    H.append('<p>On top of the oracle set, the benchmark harness dumps three contiguous regions from vanilla and compares them block for block with both generators:</p>')
+    H.append(table(['level / check', 'values', 'mismatches', '', 'notes'], test_rows, num_cols=(1, 2), cls='names'))
+    H.append('<h3>Whole regions, block for block</h3>')
+    H.append('<p>The benchmark harness dumps three contiguous regions from vanilla and compares them block for block with both generators:</p>')
     H.append(table(['generator', 'region', 'blocks', 'mismatches'], verify_rows, num_cols=(2, 3)))
-    H.append('<p class="lead">Small differences matter. The volume path and the point path of the noise associate the gradient dot product '
-             'differently, so the port keeps both:</p>')
+    if g:
+        H.append(in_game_section(g))
+
+    # ---- exactness: the engine behaviours it depends on
+    H.append('</section><section id="exactness"><h2>What exactness takes</h2>')
+    H.append('<p>These are the behaviours of 26.3\'s terrain generation that are easy to get almost right. They were found by reading public signatures and '
+             'bytecode of the locally prepared game jar and by comparing against the oracle; no game source is reproduced. The longer write-up is '
+             '<code>docs/ENGINE_NOTES.md</code>.</p>')
+    H.append('<h3>Two evaluation semantics</h3>')
+    H.append('<p>26.3\'s density functions are float-valued and have two evaluation paths that do not produce identical bits. The volume path '
+             '(<code>sampleVolume</code>) generates a chunk\'s density, the climate for biomes, ore-vein density and richness, and the aquifer\'s '
+             'surface-level prefill. The point path (<code>sampleValue</code>) answers the aquifer\'s barrier, floodedness, spread and lava queries, the '
+             'ore-vein filler gap and the <code>find_top_surface</code> probes.</p>')
+    H.append(table(['', 'volume path', 'point path'], [
+        ['noise coordinates', '<code>block * (scale * frequency)</code>', '<code>(block * scale) * frequency</code>'],
+        ['gradient dot product', '<code>(gx*x + gz*z) + gy*y</code>, xz part reused over y', '<code>(gx*x + gy*y) + gz*z</code>'],
+        ['interpolation', 'z, then x, then incremental steps in y', 'lerp3 at the point'],
+        ['min / max', 'keep the first argument unless the second is strictly smaller or larger', '<code>Math.min</code> / <code>max</code>, with range-based short cuts'],
+        ['mul / div', 'plain', 'zero short-circuit on the first operand']]))
+    H.append('<p class="lead">The code generator (<code>cuda/codegen/gen_router.py</code>) emits a separate evaluator per context, each with fixed semantics. '
+             'Mixing them up changes the last bit at a small fraction of positions, which is enough to flip blocks. The gradient dot product shows how small '
+             'the difference is:</p>')
     H.append(snippet('cpu/include/mccuda/noise_eval.h', r'^// GRADIENT\[hash & 15\]\.dot', r'^    return a \+ c;',
-                     '<code>(gx\u00b7x + gy\u00b7y) + gz\u00b7z</code> for point samples, <code>(gx\u00b7x + gz\u00b7z) + gy\u00b7y</code> for volume samples, '
-                     'where the xz part is reused over y. In float arithmetic these round differently, and the difference is enough to flip blocks.'))
-    H.append('<p class="lead">Neighbour heights in the material rules depend on vanilla\'s column order. The GPU walks all columns in parallel and '
-             'reconstructs what each column would have seen:</p>')
+                     'Point samples add y before z; volume samples compute the xz part once and reuse it over y. In float arithmetic the two orders round '
+                     'differently.'))
+    H.append('<h3>The compiled density graph</h3>')
+    H.append('<p>Vanilla rewrites the density graph before sampling: references are inlined, structurally equal cache nodes are merged, and functions that do '
+             'not depend on an axis are evaluated on slices. The IR exporter (<code>oracle/.../IrExporter.java</code>) mirrors these rewrites, and the binary '
+             'operations carry vanilla\'s compile-time decisions: constant detection, division by a constant as a multiply by the float reciprocal, and '
+             'min/max pruning from value ranges. Those decisions change results, so they are made once, at export time, exactly as vanilla makes them.</p>')
+    H.append('<h3>Random numbers</h3>')
+    H.append('<p>Xoroshiro128++ with positional factories: <code>fromHashOf</code> seeds from the MD5 of a name, <code>at(x, y, z)</code> from '
+             '<code>Mth.getSeed</code>. The legacy 48-bit LCG still drives the biome temperature noise. <code>nextDouble</code> is '
+             '<code>(bits &gt;&gt;&gt; 11) * 2^-53</code> computed in double: a decompiler rendering suggested float arithmetic, and the bytecode '
+             '(<code>l2d</code>, <code>dmul</code>) settled it. Noise construction sums the octave amplitudes with a compensated sum, so plain summation '
+             'is wrong.</p>')
+    H.append('<h3>Biomes and the R-tree tie rule</h3>')
+    H.append('<p>The six climate parameters are sampled at every quart (4 blocks) with the volume path and quantized as <code>(long)(value * 10000f)</code>. '
+             'The lookup is an R-tree over 7,594 parameter boxes (19 children per node, built with stable sorts): the search descends into a child only if '
+             'its box is strictly closer than the best leaf so far, and accepts a leaf only if it is strictly closer. <code>BiomeManager</code> then picks '
+             'a quart per block from the 8 surrounding quarts with a seeded offset; that seed is the SHA-256 of the world seed, read little-endian.</p>')
+    H.append('<p>The tree keeps a last-result candidate and starts each search from it. On an exact distance tie the candidate wins if it reaches the minimal '
+             'distance; otherwise the first minimal leaf in DFS order wins. This is not a corner case: over %d seeds (%s quart lookups each, region '
+             '128×128 plus borders) the candidate changed the chosen leaf at %.0f–%.0f ppm of lookups and the biome at %.0f–%.0f ppm, because '
+             'quantized climate values regularly land exactly on a box boundary. Returning the plain nearest leaf would put a wrong biome in roughly one '
+             'quart in %s. Both generators reproduce the rule along each chunk\'s chain of lookups. Vanilla\'s only other history dependence is the first '
+             'lookup of a chunk, which starts from whatever the worker thread looked up last; the oracle and our generators start it empty, so a live '
+             'server can differ where that first lookup is an exact tie.%s</p>'
+             % (len(ties), '{:,}'.format(int(ties[0]['quarts'])), min(tie_leaf), max(tie_leaf), min(tie_biome), max(tie_biome),
+                '{:,}'.format(int(round(1e6 / st.mean(tie_biome), -2))),
+                (' Inside the running game none of the %s biome values compared <a href="#in-game">above</a> differed.' % '{:,}'.format(in_game['biomes'])
+                 if in_game and in_game['biome_mismatches'] == 0 else '')))
+    H.append('<p class="lead">The GPU finds the first minimal leaf of every quart in parallel (with a bounded search, v8 below). The rule then needs the '
+             'previous result only where the previous leaf also reaches the minimum:</p>')
+    H.append(snippet('cuda/src/terrain.cu', r'^// tie\[p\]: the previous position', r"^    tie\[idx\] = ",
+                     'Only where this flag is set can the last-result candidate change the answer, and only there does the chain kernel take its slow path; '
+                     'one warp per chunk resolves those windows.'))
+    H.append('<h3>Aquifers</h3>')
+    H.append('<p>A 16×12×16 grid. Cell locations are random per grid cell; fluid status comes from the surface level around the cell, the floodedness '
+             'and spread noises, and a lava-noise check for fluid levels at or below −10. The surface level comes from <code>find_top_surface</code>: '
+             'positions inside the aquifer constructor\'s prefill window (quarts 4c−4 to 4c+6) use volume semantics, other positions are sampled lazily '
+             'with point semantics, and the GPU must use the same split. Blocks above a per-chunk skip height use the global fluid picker directly.</p>')
+    H.append('<h3>Material rules</h3>')
+    H.append('<p>A column is walked top-down. Stone depth above and below, water height and surface depth feed the rule tree: about 150 conditions, 110 block '
+             'results, 43 noise thresholds, 2 vertical gradients, 2 ore veins (new in 26.3\'s material rules) and clay bands. 26.3 checks a cave biome for '
+             'almost every stone block below the preliminary surface, so the biome zoom runs for most blocks of a chunk.</p>')
+    H.append('<p class="lead">The heightmap is updated on every block placement, and the slope condition reads neighbour heights. Vanilla processes columns '
+             'in x-major, z-minor order, so a neighbour\'s height is from before or after both surface extensions. The GPU walks all columns in parallel '
+             'and reconstructs what each column would have seen from three height snapshots, with the frozen-ocean extension dry-run in a first pass:</p>')
     H.append(snippet('cuda/src/terrain.cu', r'auto H = \[&\]\(int ox, int oz\)', r'^    \};', 'Columns before (x, z) in the x-major, z-minor loop '
                      'have finished both surface extensions (h2), later ones neither (h0), and the column itself has finished the eroded-badlands '
                      'extension (h1). The slope condition reads these heights.', before=2))
-    H.append('<p><b>The R-tree tie rule is not a corner case.</b> Over %d seeds (%s quart lookups each, region 128\u00d7128 plus borders), the '
-             'last-result candidate changed the chosen parameter leaf at %.0f\u2013%.0f ppm of lookups and the <i>biome</i> at %.0f\u2013%.0f ppm, because '
-             'quantized climate values regularly land exactly on a box boundary, which puts the target inside two adjacent boxes at distance 0. Returning the plain nearest leaf would put a wrong biome in roughly one '
-             'quart in %s. Both generators reproduce the rule exactly; it acts along each chunk\'s chain of lookups. The only history dependence vanilla '
-             'has beyond that is the first lookup of a chunk, which starts from whatever the worker thread looked up last; the oracle and our generators '
-             'start it empty.</p>' % (len(ties), '{:,}'.format(int(ties[0]['quarts'])), min(tie_leaf), max(tie_leaf), min(tie_biome), max(tie_biome),
-                                     '{:,}'.format(int(round(1e6 / st.mean(tie_biome), -2)))))
-    H.append(snippet('cuda/src/terrain.cu', r'^// tie\[p\]: the previous position', r"^    tie\[idx\] = ",
-                     'A tie flag marks the chain positions where the previous position\'s first minimal leaf also reaches the minimum. Only there can '
-                     'the R-tree\'s last-result candidate change the answer, and only there does the chain kernel take its slow path.'))
-    H.append('<p>The engine behaviours that exactness depends on (two evaluation semantics, the R-tree tie rule, aquifer prefill, heightmap order in '
-             'the material rules) are written up in the <a href="#notes">engineering notes</a> below.</p>')
 
-    H.append('</section><section id="speedup"><h2>How the speedup was found</h2>')
-    H.append('<p>Starting from a straight port of the reference code to CUDA (v0), each step below was chosen from profiling data, measured right after the change at '
-             'the same configuration, and re-verified on the full oracle set before it was committed.</p>')
-    H.append(figure(charts['ladder'], 'v9 is measured with two pipeline slots and batch 2048 (same region); its stage bars come from a one-slot run of the same code.'))
-    H.append(table(['version', 'change', 'chunks/s', 'step', 'vs v0'], ladder_rows, num_cols=(2, 3, 4)))
+    # ---- speedup
+    H.append('</section><section id="speedup"><h2>How it got fast</h2>')
+    H.append('<p>Starting from a straight port of the reference code (v0), each step was chosen from profiling data, measured right after the change on '
+             'the same 64×64 region (4,096 chunks), and re-verified on the full oracle set before it was committed. The headline rate uses the '
+             '128×128 region, where the two-slot pipeline runs eight batches instead of two.</p>')
+    H.append(figure(charts['ladder'], 'v9 is measured with two pipeline slots and batch 2048; its stage bars come from a one-slot run of the same code.'))
+    H.append(table(['version', 'change', 'chunks/s', 'step', 'vs v0', 'why the output stays identical'], ladder_rows, num_cols=(2, 3, 4)))
     zoom_line = next(l.strip() for l in (FINAL / 'tests_full.txt').read_text(encoding='utf-8-sig').splitlines() if 'zoom fast path' in l)
     H.append('<h3>What mattered, with the code</h3>')
     H.append('<h4>FP64 is the bottleneck on a GeForce part</h4><p class="lead">The RTX 5090 runs FP64 at 1/64 of its FP32 rate. Minecraft 26.3\'s '
@@ -672,8 +755,9 @@ def main():
     H.append(snippet('cpu/include/mccuda/noise_eval.h', r'^MCC_HD MCC_FI float perlin_volume\(', r'^}', 'Every <code>double</code> line is FP64 '
                      'work: a multiply, the wrap test, an add, a floor and a subtraction per axis. Everything after <code>volume_corners</code> is FP32.',
                      before=1))
-    H.append('<h4>v1: floor and wrap as integer work</h4><p class="lead"><code>Mth.floor</code> becomes one conversion instruction with the NaN case '
-             'decided on the bit pattern, and the wrap range test becomes integer compares on the IEEE bits:</p>')
+    H.append('<h4>v1: floor and wrap as integer work</h4><p class="lead"><code>Mth.floor</code> is <code>(int) Math.floor(v)</code>, and Java\'s cast '
+             'saturates with NaN going to 0. On the device it becomes one conversion instruction with the NaN case decided on the bit pattern, and the wrap '
+             'range test becomes integer compares on the IEEE bits:</p>')
     H.append(snippet('cpu/include/mccuda/javamath.h', r'^MCC_HD MCC_FI int32_t mth_floor\(double v\)', r'^}', '<code>cvt.rmi.s32.f64</code> floors '
                      'and saturates exactly like Java\'s <code>(int)</code> cast. The host keeps the reference form.', before=1))
     H.append(snippet('cpu/include/mccuda/noise_eval.h', r'^MCC_HD MCC_FI double gn_wrap\(double x\)', r'^#endif', 'IEEE magnitudes order like '
@@ -688,7 +772,7 @@ def main():
     H.append(snippet('cuda/src/terrain.cu', r'^__global__ void k_corners\(', r'^}', 'Each distinct corner column u owns its x and z records; '
                      'the y records are shared by every column at the same corner row.'))
     H.append('<h4>v3 and v6: the biome zoom</h4><p class="lead">The material rules check a cave biome for nearly every stone block, and the '
-             'BiomeManager zoom was %.0f%% of the surface kernel in an ablation build. Its squared offsets take only 8 \u00d7 1,024 distinct values '
+             'BiomeManager zoom was %.0f%% of the surface kernel in an ablation build. Its squared offsets take only 8 × 1,024 distinct values '
              '(v3), and an FP32 pre-filter with a proven error bound leaves the FP64 comparison to near ties (v6):</p>' % zoom_share)
     H.append(snippet('cuda/include/mccuda_cuda/terrain_device.h', r'^MCC_HD MCC_FI double zoom_square\(int t\)', r'^}', 'The table is built on '
                      'the device by this function, with the same expression as the per-lookup code it replaces.', before=3))
@@ -696,14 +780,14 @@ def main():
                      'The comment holds the error bound. One FP32 candidate is the answer; several fall back to vanilla\'s FP64 arithmetic in corner order.'))
     H.append(snippet('bench/results/final/tests_full.txt', re.escape(zoom_line[:20]), re.escape(zoom_line[:20]), 'The self-test compares the fast path '
                      'with the plain FP64 zoom on 2^31 random blocks up to the world border. The near ties exercise the FP64 fallback.', lang='text'))
-    H.append('<h4>v4 and v5: deduplication across chunks</h4><p class="lead">Neighbouring chunks need the same positions. For the 64\u00d764 region, '
-             '2,117,632 surface-level lookups are 144,778 distinct ones (14.6\u00d7), and 102,400 corner columns are 66,049 (1.55\u00d7). The dedupe runs on '
+    H.append('<h4>v4 and v5: deduplication across chunks</h4><p class="lead">Neighbouring chunks need the same positions. For the 64×64 region, '
+             '2,117,632 surface-level lookups are 144,778 distinct ones (14.6×), and 102,400 corner columns are 66,049 (1.55×). The dedupe runs on '
              'the device for any chunk list:</p>')
     H.append(snippet('cuda/src/dedupe.cuh', r'^    // unique\[0 \.\. \*count\)', r'^    }$', 'Radix sort, mark the first key of each run, scan, scatter. '
                      'The unique count stays on the device, so the evaluation kernels read it without a host round trip.'))
-    H.append(snippet('cuda/src/terrain.cu', r'^__global__ void k_grid_keys\(', r'^}', 'The key carries the evaluation semantics. A position '
-                     'inside a chunk\'s aquifer prefill window is a volume-path sample, outside it a point-path sample, and the two can differ in '
-                     'the last bit.'))
+    H.append(snippet('cuda/src/terrain.cu', r'^__global__ void k_grid_keys\(', r'^}', 'The key carries the evaluation semantics: a position '
+                     'inside a chunk\'s aquifer prefill window is a volume-path sample, outside it a point-path sample (see '
+                     '<a href="#exactness">Exactness</a>).'))
     H.append('<h4>v7: inline the generated rule tree</h4><p class="lead">The material-rule functions were <code>noinline</code>, which kept the '
              'whole rule context in local memory. Inlining them cut the stage by %.0f%%:</p>' % inline_cut)
     gen_hdr = ROOT / 'build' / 'generated' / 'mccuda_router.cuh'
@@ -733,15 +817,8 @@ def main():
         H.append('<h3>Final kernel profile</h3><p>Nsight Systems, region 64×64 in one batch of 4,096 chunks, average over repetitions:</p>')
         H.append(table(['kernel', 'ms', 'share', 'launches', 'what it does'], nsys_rows, num_cols=(1, 2, 3)))
 
-    H.append('</section><section id="core"><h2>The core pipeline (Phase 3 baseline)</h2><p>The density-plus-fill core without aquifers or surface, as first ported. Vanilla here is '
-             '<code>NoiseChunk</code> + <code>sampleVolume(finalDensity)</code> + the substance decision per block, aquifers disabled; the GPU column uses the '
-             'first, naive kernels, which were kept as the baseline implementation <code>cuda-v0</code>.</p>')
-    H.append(table(['configuration', 'chunks/s', 'ms/chunk', 'CV', 'min', 'max', 'n', ''], core_rows, num_cols=(1, 2, 3, 4, 5, 6)))
-    H.append('<p>On one thread vanilla spends %.2f ms per chunk on this core against %.2f ms for the whole TERRAIN step, so the density core is only '
-             '%.0f%% of the work; biomes, aquifers and the material rules are the larger part, which is why the full step was the target.</p>'
-             % (1000.0 / vcore[1]['mean'], 1000.0 / van1['mean'], 100.0 * van1['mean'] / vcore[1]['mean']))
-
-    H.append('</section><section id="method"><h2>Method</h2><ul>')
+    # ---- method and scope
+    H.append('</section><section id="method"><h2>Method and scope</h2><h3>Method</h3><ul>')
     H.append('<li><b>Machine:</b> AMD Ryzen 9 9950X (16 cores / 32 threads), 128 GB RAM, NVIDIA GeForce RTX 5090 (170 SMs, 32 GB, driver 591.86, WDDM), '
              'Windows 11. CUDA 13.1, MSVC 14.44, JDK 25.0.4.1. GPU state sampled right after the GPU runs: %s.</li>' % html.escape(gpu_state))
     H.append('<li><b>Clocks unlocked</b> (locking needs administrator rights); variance is reported instead: CV over repetitions and, for the headline '
@@ -754,26 +831,42 @@ def main():
     H.append('<li><b>Profiling:</b> Nsight Systems for kernel times and timelines, cuobjdump for register/stack use and SASS instruction mixes, CUDA events '
              'per stage, and targeted ablation builds. Nsight Compute could not collect counters: it reports <code>ERR_NVGPUCTRPERM</code> (counter access '
              'is admin-only on this machine and was not changed).</li></ul>')
-
-    H.append('</section><section id="scope"><h2>Scope and limits</h2><ul>')
+    H.append('<p class="lead">Vanilla is timed through its own code path. The inner loop of the vanilla benchmark makes the calls that '
+             '<code>buildTerrain</code> makes before carvers, on real ProtoChunks whose biomes were generated in phase 1:</p>')
+    H.append(snippet('oracle/src/main/java/mccuda/oracle/TerrainBench.java', r'// phase 2: noise fill', r'buildSurface\.invoke',
+                     'One NoiseChunk per chunk, <code>doFill</code> with aquifers on, then <code>buildSurface</code> with a BiomeManager over the 3×3 '
+                     'neighbourhood. The GPU does exactly this work; nothing is skipped on either side.', lang='java'))
+    H.append('<h3>Scope</h3><ul>')
     H.append('<li><b>Included:</b> biomes (multi-noise climate, exact R-tree search including its last-result tie rule), final density with all cave '
              'noises, NoiseBasedAquifer, doFill, the material rules with ore veins, clay bands, eroded-badlands and frozen-ocean extensions, and the heightmap '
              'updates they depend on.</li>')
-    H.append('<li><b>Not included:</b> carvers (they were not requested), structures (Beardifier is empty without structure starts), blending with '
-             'old-world chunks, features, lighting. In a live server the first biome lookup of a chunk starts from the worker thread\'s previous lookup; '
-             'ours starts empty, like the oracle, so a server can differ where that first lookup is an exact tie (see Correctness).</li>')
+    H.append('<li><b>Not included:</b> carvers (they were not requested), the terrain adaptation around structures (measured in the game, see '
+             '<a href="#in-game">Correctness</a>), blending with old-world chunks, features and lighting. A live server\'s first biome lookup per chunk '
+             'can differ on an exact tie (see <a href="#exactness">Exactness</a>).</li>')
     H.append('<li><b>Decisions taken without the author:</b> Minecraft 26.3 on native Windows; game-derived data (IR, terrain model, oracle dumps) is '
              'extracted locally into the git-ignored <code>data/</code> and never committed; clocks unlocked; overworld only. A Fabric mod '
              '(<code>client/</code>) exists only to record the in-game videos from a precomputed dump; running CUDA inside the game (JNI) was not '
              'attempted.</li></ul>')
+
+    # ---- reproduce
     steps = [('powershell -File build.ps1', 'CMake + Ninja, Release'),
              ('powershell -File oracle\\regen.ps1', 'reference data from the local game jar (data/, git-ignored)'),
              ('build\\tests\\mccuda_tests.exe --set full', 'bit-exactness, all levels'),
              ('python bench\\run_all.py', 'every measurement in this report'),
+             ('python bench\\make_videos.py record', 'top-down videos: run every implementation on the video region'),
+             ('python bench\\make_videos.py render', 'top-down videos: render into docs/videos/'),
+             ('python bench\\make_flythrough.py', 'first-person GPU flythrough'),
+             ('cd client; .\\gradlew runClient', 'in-game take; control takes in bench/make_ingame.py'),
+             ('python bench\\make_ingame.py', 'in-game videos, frame comparison, in-game checks'),
              ('python docs\\make_report.py', 'this page and docs/img/*.png')]
     width = max(len(c) for c, _ in steps) + 2
-    H.append('</section><section id="notes" class="notes"><h2>Engineering notes</h2>%s' % engine_notes_html())
     H.append('</section><section id="reproduce"><h2>Reproduce</h2><pre>%s</pre>' % '\n'.join(html.escape(c.ljust(width) + '# ' + d) for c, d in steps))
+    H.append('<p><code>oracle/regen.ps1</code> writes, under the git-ignored <code>data/</code>, the optimized density graph '
+             '(<code>overworld_ir.json</code>: floats as raw bits, doubles as hex, with value ranges and axis dependence per node), the material-rule tree, '
+             'block palette and biome parameters (<code>overworld_terrain.json</code>), and the per-seed oracle dumps: named-function volumes (L1), final '
+             'density (L2), core block fill (L3), biomes, aquifer fill and final terrain, in <code>((y − minY) * 16 + z) * 16 + x</code> order with '
+             'SHA-256 manifests. The in-game region comes from <code>build\\bench\\mccuda_bench.exe --mode terrain-gpu --region 136 --x0 404 --z0 -324 '
+             '--reps 1 --warmup 0 --dump data\\videos\\ingame_dump</code>.</p>')
     H.append('<footer>Generated %s by <code>docs/make_report.py</code> from the measurements in <code>bench/results/</code>.</footer>' % now)
     H.append('</section></div>')
     page = '\n'.join(H)
@@ -788,130 +881,117 @@ def main():
         van1['mean'], van32['mean'], D['cpu_terrain'][1]['mean'], D['cpu_terrain'][32]['mean'], gpu['mean'], kern['mean'], sp1, sp32))
 
 
-def videos_section():
-    """The recorded generation videos (bench/make_videos.py), when they exist."""
-    vj = ROOT / 'docs' / 'videos' / 'videos.json'
-    if not vj.exists():
-        return ''
-    m = json.loads(vj.read_text(encoding='utf-8'))
-    reg = m['region']
+def load_json(path):
+    return json.loads(path.read_text(encoding='utf-8')) if path.exists() else None
 
-    def rate(k):
-        return '{:,.0f}'.format(m[k]['chunks'] / (m[k]['end_ms'] / 1000.0))
 
-    def secs(k):
-        ms = m[k]['end_ms']
-        return '%.1f s' % (ms / 1000.0) if ms >= 1000 else '%.0f ms' % ms if ms >= 100 else '%.1f ms' % ms
+def video(name, caption, autoplay=False):
+    attrs = 'autoplay muted loop playsinline controls preload="auto"' if autoplay else 'muted playsinline controls preload="none"'
+    label = re.sub(r'<[^>]+>', '', caption).split('.')[0]
+    return ('<figure class="video"><video src="videos/%s.mp4" poster="videos/%s.jpg" %s aria-label="%s"></video><figcaption>%s</figcaption></figure>'
+            % (name, name, attrs, html.escape(label), caption))
 
-    def video(name, caption, autoplay=False):
-        attrs = 'autoplay muted loop playsinline controls preload="auto"' if autoplay else 'muted playsinline controls preload="none"'
-        return ('<figure class="video"><video src="videos/%s.mp4" poster="videos/%s.jpg" %s aria-label="%s"></video><figcaption>%s</figcaption></figure>'
-                % (name, name, attrs, html.escape(caption.split('.')[0]), caption))
 
+def videos_section(m, f, g):
+    """The recorded videos: top-down generation replays (bench/make_videos.py), the GPU flythrough (bench/make_flythrough.py)
+    and the real client in GPU-generated terrain (client/, bench/make_ingame.py)."""
     out = ['</section><section id="videos"><h2>Watch it generate</h2>']
-    out.append('<p>Each implementation generated the same %d\u00d7%d-chunk region (chunk %d, %d, seed 123456789: badlands, a river, beach, ocean and '
-               'grassland) while logging the moment every chunk was finished. The videos replay those logs at real speed over a top-down map of the '
-               'generated blocks: highest block per column, water shaded by depth, relief from the height field. The map is the same for every '
-               'implementation because the output is: for this region the GPU\'s blocks were compared with a vanilla dump, 100,663,296 blocks with 0 '
-               'mismatches. These are single recorded runs; the benchmark tables above are the reference measurements.</p>'
-               % (reg['size'], reg['size'], reg['x0'], reg['z0']))
-    out.append(video('race', 'All five on one clock. Single-threaded vanilla needs %s, 32 threads %s, the GPU %s, including the copy back to the '
-                             'host. The CPU port finishes in %s on one thread and %s on 32.' % (secs('van1'), secs('van32'), secs('gpu'), secs('cpu1'), secs('cpu32')),
-                     autoplay=True))
-    out.append('<div class="videos">')
-    out.append(video('vanilla-1-thread', 'Vanilla 26.3 on one thread: %s, %s chunks/s. Phase 1 computes the biomes of the region and its border, then '
-                                         'chunks finish one by one in order.' % (secs('van1'), rate('van1'))))
-    out.append(video('vanilla-32-threads', 'Vanilla 26.3 on 32 threads: %s, %s chunks/s. Chunks land out of order as the worker threads pick them up.'
-                     % (secs('van32'), rate('van32'))))
-    out.append(video('cpu-port-1-thread', 'The C++ reference port on one thread: %s, %s chunks/s.' % (secs('cpu1'), rate('cpu1'))))
-    out.append(video('cpu-port-32-threads', 'The C++ reference port on 32 threads: %s, %s chunks/s.' % (secs('cpu32'), rate('cpu32'))))
-    out.append(video('gpu', 'RTX 5090: %s for the whole region in four batches of 256 chunks, done within the first video frame. A replay at 1/%d '
-                            'speed follows, showing each batch land.' % (secs('gpu'), m['gpu_slowdown'])))
-    out.append(video('gpu-region-128', 'RTX 5090 at its benchmark batch size: a 128\u00d7128 region (16,384 chunks, chunk 400, \u2212300) in %s, %s '
-                                       'chunks/s, eight batches of 2,048, then a replay at 1/%d speed.' % (secs('gpu128'), rate('gpu128'), m['gpu128_slowdown'])))
-    out.append('</div>')
-    out.append(first_person_section())
+    if m:
+        reg = m['region']
+
+        def rate(k):
+            return '{:,.0f}'.format(m[k]['chunks'] / (m[k]['end_ms'] / 1000.0))
+
+        def secs(k):
+            ms = m[k]['end_ms']
+            return '%.1f s' % (ms / 1000.0) if ms >= 1000 else '%.0f ms' % ms if ms >= 100 else '%.1f ms' % ms
+
+        out.append('<p>Each implementation generated the same %d×%d-chunk region (chunk %s, %s: badlands, a river, beach, ocean and grassland) while '
+                   'logging the moment every chunk was finished. The videos replay those logs at real speed over a top-down map of the generated blocks: '
+                   'highest block per column, water shaded by depth, relief from the height field. The map is the same for every implementation because the '
+                   'blocks are; for this region the GPU\'s output matches a vanilla dump block for block. These are single recorded runs; the tables in '
+                   '<a href="#results">Results</a> are the reference measurements.</p>'
+                   % (reg['size'], reg['size'], str(reg['x0']).replace('-', '−'), str(reg['z0']).replace('-', '−')))
+        out.append(video('race', 'All five on one clock. The GPU is done within the first frame (%s); vanilla on one thread needs %s.'
+                         % (secs('gpu'), secs('van1')), autoplay=True))
+        out.append('<div class="videos three">')
+        out.append(video('vanilla-1-thread', 'Vanilla, 1 thread: %s, %s chunks/s. Biomes for the region and its border come first, then chunks finish one by '
+                                             'one in order.' % (secs('van1'), rate('van1'))))
+        out.append(video('vanilla-32-threads', 'Vanilla, 32 threads: %s, %s chunks/s. Chunks land out of order as worker threads pick them up.'
+                         % (secs('van32'), rate('van32'))))
+        out.append(video('cpu-port-1-thread', 'C++ port, 1 thread: %s, %s chunks/s.' % (secs('cpu1'), rate('cpu1'))))
+        out.append(video('cpu-port-32-threads', 'C++ port, 32 threads: %s, %s chunks/s.' % (secs('cpu32'), rate('cpu32'))))
+        out.append(video('gpu', 'RTX 5090: %s in four batches of 256 chunks, then a replay at 1/%d speed to show each batch land.'
+                         % (secs('gpu'), m['gpu_slowdown'])))
+        out.append(video('gpu-region-128', 'RTX 5090 at its benchmark batch size: a 128×128 region (16,384 chunks) in %s, %s chunks/s, eight batches '
+                                           'of 2,048, then a replay at 1/%d speed.' % (secs('gpu128'), rate('gpu128'), m['gpu128_slowdown'])))
+        out.append('</div>')
+    if f and g:
+        c = '{:,}'.format
+        st_, ss = f['startup'], f['steady']
+        out.append('<h3>In first person</h3>')
+        out.append('<p>Two recordings fly one 38-second camera path over the same seed: a walk at eye height in the badlands, then a climb over mesas, a '
+                   'forest, a river and the coast. The first is our own renderer generating the terrain live on the GPU; the second is the real game, '
+                   'flying through chunks the GPU generated.</p>')
+        out.append('<div class="videos">')
+        out.append(video('flythrough', 'Our CUDA renderer (<code>viz/fly.cu</code>) generates every chunk within %d chunks of the camera with the bit-exact '
+                                       'pipeline and ray traces the view on the same GPU: %s chunks in the first %d frames (%.0f ms), then %.0f per generating '
+                                       'frame in %.1f ms on average (%.1f ms at most), %s in all. Procedural colours, no game textures.'
+                         % (f['radius_chunks'], c(st_['chunks']), st_['frames'], st_['gen_ms'], ss['new_mean'], ss['gen_ms_mean'], ss['gen_ms_max'],
+                            c(f['chunks_total']))))
+        out.append(video('ingame', 'The Minecraft 26.3 client. A Fabric mod fills every chunk of a %d×%d-chunk region with the GPU\'s blocks and biomes; '
+                                   'the game adds its own caves, trees and lighting. %s chunks came from the GPU, and at every frame the client held %d '
+                                   'chunks from anywhere else. %.0f fps, captured frame by frame. How the mod works and what it checked: '
+                                   '<a href="#in-game">Correctness</a>.'
+                         % (g['region']['size'], g['region']['size'], c(g['gpu_chunks']), g['client_chunks_outside_region_max'], g['client_fps_median'])))
+        out.append('</div>')
+        out.append(video('compare', 'The same frames side by side: the same mesas, terracotta bands and rivers. The ray tracer shows the TERRAIN step alone; '
+                                    'the client adds the game\'s later steps on top of it.'))
     return '\n'.join(out)
 
 
-def first_person_section():
-    """First-person recordings: the GPU ray tracer generating live (bench/make_flythrough.py) and the
-    real Minecraft client flying the same path through GPU chunks (client/, bench/make_ingame.py)."""
-    fj, ij = ROOT / 'docs' / 'videos' / 'flythrough.json', ROOT / 'docs' / 'videos' / 'ingame.json'
-    if not (fj.exists() and ij.exists()):
-        return ''
-    f, g = json.loads(fj.read_text(encoding='utf-8')), json.loads(ij.read_text(encoding='utf-8'))
+def in_game_section(g):
+    """The in-game check: vanilla's own chunks, compared with the GPU dump inside the running game (client/)."""
     c = '{:,}'.format
-
-    def video(name, caption):
-        return ('<figure class="video"><video src="videos/%s.mp4" poster="videos/%s.jpg" muted playsinline controls preload="none" aria-label="%s"></video>'
-                '<figcaption>%s</figcaption></figure>' % (name, name, html.escape(caption.split('.')[0]), caption))
-
-    out = ['<h3 id="first-person">In first person</h3>']
-    out.append('<p>Two more recordings fly one camera path through the same seed: 38 seconds that start with a walk at eye height in the badlands, '
-               'then climb over mesas, a forest, a river and the coast. The first is our own renderer generating the terrain live on the GPU; the second '
-               'is the real game, flying through chunks the GPU generated.</p>')
-    st, ss = f['startup'], f['steady']
-    out.append(video('flythrough', 'Our CUDA renderer (<code>viz/fly.cu</code>) generates every chunk within %d chunks of the camera as it moves, with the '
-                                   'bit-exact TERRAIN pipeline, and ray traces the view on the same GPU: %s chunks in the first %d frames (%.0f ms), then '
-                                   '%.0f new chunks per generating frame in %.1f ms on average (%.1f ms at most), %s chunks in all. Flat procedural colours, no '
-                                   'game textures; the overlay shows each batch\'s measured time.'
-                     % (f['radius_chunks'], c(st['chunks']), st['frames'], st['gen_ms'], ss['new_mean'], ss['gen_ms_mean'], ss['gen_ms_max'],
-                        c(f['chunks_total']))))
-    out.append(video('ingame', 'The real Minecraft 26.3 client. A Fabric mod in a development client fills every chunk of a %d\u00d7%d-chunk region with '
-                               'the GPU\'s blocks and biomes in place of vanilla\'s noise fill, surface rules and biome placement; the game then runs its '
-                               'own carvers, trees and lighting. %s chunks came from the GPU, and at every frame the client held %d chunks from outside '
-                               'the region. Rendered at %.0f fps and captured frame by frame.'
-                     % (g['region']['size'], g['region']['size'], c(g['gpu_chunks']), g['client_chunks_outside_region_max'], g['client_fps_median'])))
-    out.append(video('compare', 'The same frames side by side: the same mesas, terracotta bands and rivers. The ray tracer shows the TERRAIN step alone; '
-                                'the client adds the game\'s later steps (trees, grass, lighting) on top of it.'))
-    out.append('<p class="lead">The mod swaps the GPU\'s output in at vanilla\'s own seams: the chunk arrives already filled, and vanilla\'s surface pass, '
-               'whose result the GPU has already applied, is skipped.</p>')
-    out.append(snippet('client/src/main/java/mccuda/client/mixin/NoiseGeneratorMixin.java', r'@Inject\(method = "doFill"', r'^    }$',
-                       'Chunks inside the region take their blocks from the dump the GPU wrote beforehand (<code>mccuda_bench --dump</code>, %.1f GB '
-                       'for the region); the client does not call CUDA itself. Biomes are swapped in the same way at <code>doCreateBiomes</code>.'
-                       % (g['region']['size'] ** 2 * 384 * 256 / 1e9), lang='java'))
     t = g['control_takes']
+    out = ['<h3 id="in-game">Inside the running game</h3>']
+    out.append('<p class="lead">The in-game recording (<a href="#videos">Videos</a>) uses a Fabric mod in a development client. Inside a %d×%d-chunk '
+               'region it puts the GPU\'s output in at vanilla\'s own seams: the noise fill writes the GPU\'s finished blocks, the surface pass is skipped '
+               'because its result is already there, and biomes are swapped in the same way at <code>doCreateBiomes</code>. The client reads a dump the GPU '
+               'wrote beforehand (%.1f GB); it does not call CUDA itself.</p>' % (g['region']['size'], g['region']['size'], g['region']['size'] ** 2 * 384 * 256 / 1e9))
+    out.append(snippet('client/src/main/java/mccuda/client/mixin/NoiseGeneratorMixin.java', r'@Inject\(method = "doFill"', r'^    }$',
+                       'Inside the region the chunk is filled from the dump and vanilla\'s fill is cancelled; outside it the game generates as usual.',
+                       lang='java'))
+    out.append('<p class="lead">For control takes the same mod leaves generation to the game and compares each chunk with the GPU\'s dump as the server '
+               'generates it: the biomes right after <code>doCreateBiomes</code>, and every block right after <code>buildSurface</code>, the end of the '
+               'TERRAIN step.</p>')
+    out.append(snippet('client/src/main/java/mccuda/client/GpuDump.java', r'public void verifyBlocks', r'^    }$',
+                       'The game\'s own chunk after its surface pass, compared state by state with the GPU\'s palette index at the same position. Block states '
+                       'are canonical objects, so identity is equality.', lang='java'))
     rows = []
     for key, label in (('vanilla_raw', 'vanilla'), ('vanilla2_raw', 'vanilla, second run'), ('vanilla_struct_raw', 'vanilla, structures on')):
         v = t[key]['verify']
         rows.append([label, 'on' if t[key]['structures'] else 'off', c(v['block_chunks']), c(v['blocks']),
                      '<span class="ok">0</span>' if v['block_mismatches'] == 0 else c(v['block_mismatches']), c(v['biomes']),
                      '<span class="ok">0</span>' if v['biome_mismatches'] == 0 else c(v['biome_mismatches'])])
-    out.append('<p><b>Checked inside the game.</b> For the control takes the mod leaves generation to the game and compares what the game produced with '
-               'the GPU\'s dump, chunk by chunk, as the server generates them: the biomes right after <code>doCreateBiomes</code> and every block right '
-               'after <code>buildSurface</code>, the end of the TERRAIN step.</p>')
     out.append(table(['take', 'structures', 'chunks', 'blocks compared', 'mismatches', 'biome values', 'mismatches'], rows, num_cols=(2, 3, 4, 5, 6)))
     vs = t['vanilla_struct_raw']['verify']
-    out.append('<p>With structures on, every mismatch is in a chunk whose density a structure reshapes (the Beardifier, for villages, trail ruins and '
-               'the like): %s of the %s such chunks differ, %s blocks in all, and the other %s chunks match exactly. The GPU pipeline leaves structure terrain '
-               'adaptation out (see Scope), so the recordings use worlds without structures. One more thing the dump does not carry: vanilla\'s '
-               '<code>doFill</code> also marks aquifer fluid blocks that should start flowing once the chunk is finished. In GPU-filled chunks those '
-               'fluids stay still until a neighbouring block changes. The blocks themselves are identical.</p>'
+    out.append('<p>With structures on, every mismatch is in a chunk whose density a structure reshapes (the Beardifier, for villages, trail ruins and the '
+               'like): %s of the %s such chunks differ, %s blocks in all, and the other %s chunks match exactly. That adaptation is outside this project\'s '
+               'scope, so the recordings use worlds without structures. One more thing the dump does not carry: vanilla\'s <code>doFill</code> also marks '
+               'aquifer fluid blocks that should start flowing once the chunk is finished. In GPU-filled chunks those fluids stay still until a neighbouring '
+               'block changes; the blocks themselves are identical.</p>'
                % (c(vs['structure_adapted_chunks_differing']), c(vs['structure_adapted_chunks']), c(vs['structure_adapted_mismatches']),
                   c(vs['block_chunks'] - vs['structure_adapted_chunks'])))
     gv, vv = g['frames_gpu_vs_vanilla'], g['frames_vanilla_vs_vanilla']
-    out.append('<p><b>The frames are not identical, and are not expected to be.</b> The GPU take differs from the vanilla take in %.1f%% of pixels per '
-               'frame on average (by more than 8 of 255), and two vanilla takes differ from each other by about the same, %.1f%%. The differences are '
-               'trees. A chunk\'s trees are placed while its neighbours may already be decorated, so where trees compete for space the outcome depends '
-               'on the order in which the server\'s worker threads finish chunks. The ground under the trees is the same in all three.</p>'
-               % (100 * gv['pixels_over_8_mean'], 100 * vv['pixels_over_8_mean']))
-    out.append('<figure class="video"><img src="videos/trees.jpg" alt="The same forest in three takes: GPU chunks, vanilla, and vanilla again" '
-               'loading="lazy"><figcaption>Frame %d of three takes, cropped where the GPU take and the first vanilla take differ most. The trees '
-               'change between the two vanilla runs as much as between GPU and vanilla; the terrain does not.</figcaption></figure>' % gv['worst_frame'])
-    out.append(snippet('client/src/main/java/mccuda/client/GpuDump.java', r'public void verifyBlocks', r'^    }$',
-                       'The in-game block check: the game\'s own chunk after its surface pass, compared state by state (block states are canonical '
-                       'objects, so identity is equality) with the GPU\'s palette index at the same position.', lang='java'))
+    out.append('<p>The recorded frames still differ, and are expected to. The GPU take differs from the first vanilla take in %.1f%% of pixels per frame on '
+               'average (by more than 8 of 255), and the two vanilla takes differ from each other by about as much, %.1f%%. The differences are trees. A '
+               'chunk\'s trees are placed while its neighbours may already be decorated, so where trees compete for space the outcome depends on the order in '
+               'which the server\'s worker threads finish chunks.</p>' % (100 * gv['pixels_over_8_mean'], 100 * vv['pixels_over_8_mean']))
+    out.append('<figure class="video"><img src="videos/trees.jpg" alt="The same forest in three takes: GPU chunks, vanilla, and vanilla again" loading="lazy">'
+               '<figcaption>Frame %d of three takes, cropped where the GPU take and the first vanilla take differ most. The trees change between the two '
+               'vanilla runs as much as between GPU and vanilla; the ground under them does not.</figcaption></figure>' % gv['worst_frame'])
     return '\n'.join(out)
-
-
-def engine_notes_html():
-    import markdown
-    text = (ROOT / 'docs' / 'ENGINE_NOTES.md').read_text(encoding='utf-8')
-    text = re.sub(r'^# .*\n', '', text, count=1)                 # the section has its own heading
-    text = re.sub(r'^## ', '### ', text, flags=re.M)
-    out = markdown.markdown(text, extensions=['tables'])
-    return out.replace('<table>', '<div class="wrap"><table>').replace('</table>', '</table></div>')
 
 
 def write_readme(van1, van32, D, gpu, kern, sp1, sp32, spc, cpu1x, tests, total_checked, verify, ladder):

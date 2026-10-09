@@ -1,0 +1,22 @@
+{
+ "frames": 1141,
+ "fps": 30,
+ "width": 1280,
+ "height": 720,
+ "radius_chunks": 30,
+ "chunks_total": 10862,
+ "startup": {
+  "frames": 6,
+  "chunks": 2821,
+  "gen_ms": 78.458
+ },
+ "steady": {
+  "frames_with_new": 176,
+  "chunks": 8041,
+  "gen_ms_max": 5.693,
+  "gen_ms_mean": 4.455130681818182,
+  "new_mean": 45.6875
+ },
+ "render_ms_mean": 22.086540753724787,
+ "render_ms_max": 39.006
+}

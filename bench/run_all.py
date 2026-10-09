@@ -1,4 +1,4 @@
-"""Runs every benchmark behind docs/report.html and README.md, writing CSVs and logs to
+"""Runs every benchmark behind docs/index.html and README.md, writing CSVs and logs to
 bench/results/final/. Needs the Release build (build.ps1), the oracle data (oracle/regen.ps1)
 and JDK 25 (.tools/jdk-25 or JAVA_HOME).
 

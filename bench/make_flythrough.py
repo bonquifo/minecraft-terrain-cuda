@@ -50,6 +50,10 @@ def main():
     enc = subprocess.Popen(['ffmpeg', '-y', '-loglevel', 'error', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-s', '%dx%d' % (W, H), '-r', str(FPS), '-i', '-',
                             '-c:v', 'libx264', '-preset', 'slow', '-crf', '29', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', str(OUT / 'flythrough.mp4')],
                            stdin=subprocess.PIPE)
+    # the frames without overlay, for the side-by-side with the real client (bench/make_ingame.py)
+    rawenc = subprocess.Popen(['ffmpeg', '-y', '-loglevel', 'error', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-s', '%dx%d' % (W, H), '-r', str(FPS), '-i', '-',
+                            '-c:v', 'libx264', '-preset', 'fast', '-crf', '12', '-pix_fmt', 'yuv420p', str(DATA / 'flythrough_raw.mp4')],
+                           stdin=subprocess.PIPE)
     title = ImageFont.truetype(str(FONTS / 'segoeuib.ttf'), 22)
     small = ImageFont.truetype(str(FONTS / 'segoeui.ttf'), 15)
     mono = ImageFont.truetype(str(FONTS / 'consola.ttf'), 16)
@@ -66,6 +70,7 @@ def main():
             break
         st = {k: (v if k == 'mode' else float(v)) for k, v in kv.items()}
         stats.append(st)
+        rawenc.stdin.write(raw)
         im = Image.frombuffer('RGB', (W, H), raw, 'raw', 'RGB', 0, 1).copy()
         ov = Image.new('RGBA', (W, H), (0, 0, 0, 0))
         d = ImageDraw.Draw(ov)
@@ -101,7 +106,8 @@ def main():
         if poster is None and st['t'] >= 16.0:
             poster = im.convert('RGB')
     enc.stdin.close()
-    if fly.wait() != 0 or enc.wait() != 0:
+    rawenc.stdin.close()
+    if fly.wait() != 0 or enc.wait() != 0 or rawenc.wait() != 0:
         raise SystemExit('flythrough failed')
     if poster is not None:
         poster.save(OUT / 'flythrough.jpg', quality=88)

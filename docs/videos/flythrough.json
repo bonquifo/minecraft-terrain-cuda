@@ -8,15 +8,15 @@
  "startup": {
   "frames": 6,
   "chunks": 2821,
-  "gen_ms": 78.458
+  "gen_ms": 73.952
  },
  "steady": {
   "frames_with_new": 176,
   "chunks": 8041,
-  "gen_ms_max": 5.693,
-  "gen_ms_mean": 4.455130681818182,
+  "gen_ms_max": 5.683,
+  "gen_ms_mean": 4.42296590909091,
   "new_mean": 45.6875
  },
- "render_ms_mean": 22.086540753724787,
- "render_ms_max": 39.006
+ "render_ms_mean": 21.873703768624047,
+ "render_ms_max": 37.902
 }

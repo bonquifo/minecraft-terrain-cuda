@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "mccuda_recorder",
+  "version": "1.0.0",
+  "name": "mccuda in-game recorder",
+  "description": "Fills a region from the GPU generator's output and records a scripted flight through it.",
+  "environment": "client",
+  "entrypoints": { "client": ["mccuda.client.Recorder"] },
+  "mixins": ["mccuda_recorder.mixins.json"],
+  "depends": { "fabricloader": ">=0.19.5", "minecraft": "26.3" }
+}

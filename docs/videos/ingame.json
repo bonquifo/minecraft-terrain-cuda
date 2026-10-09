@@ -1,0 +1,105 @@
+{
+ "served_from_gpu": true,
+ "frames": 1141,
+ "fps": 30,
+ "width": 1280,
+ "height": 720,
+ "render_distance": 24,
+ "seed": 123456789,
+ "region": {
+  "x0": 404,
+  "z0": -324,
+  "size": 136
+ },
+ "gpu_chunks": 10683,
+ "gpu_biomes": 11073,
+ "vanilla_chunks": 332,
+ "prepass_s": 49.3,
+ "settle_s": 7.4,
+ "record_s": 38.5,
+ "verify": {
+  "biome_chunks": 0,
+  "biomes": 0,
+  "biome_mismatches": 0,
+  "block_chunks": 0,
+  "blocks": 0,
+  "block_mismatches": 0,
+  "structure_adapted_chunks": 0,
+  "structure_adapted_chunks_differing": 0,
+  "structure_adapted_mismatches": 0,
+  "other_chunks_differing": 0
+ },
+ "structures": false,
+ "client_fps_median": 30.0,
+ "client_fps_min": 29,
+ "client_chunks_max": 2446,
+ "client_chunks_outside_region_max": 0,
+ "ingame_mb": 10.1,
+ "compare_mb": 8.1,
+ "frames_gpu_vs_vanilla": {
+  "frames": 1141,
+  "identical_frames": 0,
+  "mean_abs_diff": 3.0403678024043845,
+  "pixels_over_8_mean": 0.050755153176429056,
+  "pixels_over_8_max": 0.2223122829861111,
+  "worst_frame": 785
+ },
+ "frames_vanilla_vs_vanilla": {
+  "frames": 1141,
+  "identical_frames": 0,
+  "mean_abs_diff": 3.321840320571928,
+  "pixels_over_8_mean": 0.05577465970092025,
+  "pixels_over_8_max": 0.31932942708333334,
+  "worst_frame": 1074
+ },
+ "control_takes": {
+  "vanilla_raw": {
+   "structures": false,
+   "vanilla_chunks": 11047,
+   "verify": {
+    "biome_chunks": 11117,
+    "biomes": 17075712,
+    "biome_mismatches": 0,
+    "block_chunks": 10727,
+    "blocks": 1054507008,
+    "block_mismatches": 0,
+    "structure_adapted_chunks": 0,
+    "structure_adapted_chunks_differing": 0,
+    "structure_adapted_mismatches": 0,
+    "other_chunks_differing": 0
+   }
+  },
+  "vanilla2_raw": {
+   "structures": false,
+   "vanilla_chunks": 10955,
+   "verify": {
+    "biome_chunks": 11037,
+    "biomes": 16952832,
+    "biome_mismatches": 0,
+    "block_chunks": 10646,
+    "blocks": 1046544384,
+    "block_mismatches": 0,
+    "structure_adapted_chunks": 0,
+    "structure_adapted_chunks_differing": 0,
+    "structure_adapted_mismatches": 0,
+    "other_chunks_differing": 0
+   }
+  },
+  "vanilla_struct_raw": {
+   "structures": true,
+   "vanilla_chunks": 10938,
+   "verify": {
+    "biome_chunks": 11053,
+    "biomes": 16977408,
+    "biome_mismatches": 0,
+    "block_chunks": 10663,
+    "blocks": 1048215552,
+    "block_mismatches": 826034,
+    "structure_adapted_chunks": 1142,
+    "structure_adapted_chunks_differing": 524,
+    "structure_adapted_mismatches": 826034,
+    "other_chunks_differing": 0
+   }
+  }
+ }
+}

@@ -9,6 +9,7 @@
 //     --streams S     GPU batches in flight (default 2: transfers overlap the next batch's kernels)
 //     --timeline F    terrain-gpu/-cpu: when each chunk of the last repetition finished (CSV, same layout as the vanilla bench)
 //     --topdown F     terrain-gpu: top block, height and water floor of every column of the region (binary, for the videos)
+//     --dump DIR      terrain-gpu: the region's blocks (u8 palette index) and biomes (u8 per quart), row-major by chunk, with meta.json
 //     --out FILE      CSV to append to (default bench/results/bench.csv)   --tag NAME
 //
 // Region semantics match the vanilla bench (oracle bench-terrain): every chunk of
@@ -44,7 +45,7 @@ using namespace mcc;
 namespace {
 
 struct Options {
-    std::string mode = "terrain-gpu", data = MCCUDA_DATA_DIR, out = "bench/results/bench.csv", tag, verify, timeline, topdown;
+    std::string mode = "terrain-gpu", data = MCCUDA_DATA_DIR, out = "bench/results/bench.csv", tag, verify, timeline, topdown, dump;
     int region = 16, x0 = 0, z0 = 0, reps = 5, warmup = 2, batch = 256, threads = 1, version = 0, streams = 2;
     int64_t seed = 123456789;
     bool pinned = true;
@@ -166,12 +167,33 @@ void write_topdown(const Options& o, const IR& ir, const TerrainModel& tm, const
 
 void write_timeline_header(std::ofstream& f) { f << "phase,index,cx,cz,done_ms\n"; }
 
+// Full output of a region for the in-game recorder (client/): terrain.u8 holds each
+// chunk's blocks in the canonical layout, biomes.u8 each chunk's quart biomes, both in
+// row-major chunk order ((cz - z0) * region + (cx - x0)).
+void write_dump(const Options& o, const IR& ir, const std::vector<cuda::ChunkXZ>& order, const uint8_t* terrain, const uint8_t* biomes, size_t per,
+                size_t qper) {
+    std::filesystem::create_directories(o.dump);
+    std::ofstream t(std::filesystem::path(o.dump) / "terrain.u8", std::ios::binary), b(std::filesystem::path(o.dump) / "biomes.u8", std::ios::binary);
+    std::vector<size_t> pos(order.size());
+    for (size_t i = 0; i < order.size(); ++i) pos[static_cast<size_t>((order[i].z - o.z0) * o.region + (order[i].x - o.x0))] = i;
+    for (size_t k = 0; k < order.size(); ++k) {
+        t.write(reinterpret_cast<const char*>(terrain + pos[k] * per), static_cast<std::streamsize>(per));
+        b.write(reinterpret_cast<const char*>(biomes + pos[k] * qper), static_cast<std::streamsize>(qper));
+    }
+    std::ofstream m(std::filesystem::path(o.dump) / "meta.json");
+    m << "{\"seed\": " << o.seed << ", \"x0\": " << o.x0 << ", \"z0\": " << o.z0 << ", \"region\": " << o.region << ", \"height\": " << ir.height
+      << ", \"min_y\": " << ir.min_y << ", \"chunk_bytes\": " << per << ", \"biome_bytes\": " << qper << "}\n";
+    std::printf("dump: wrote %s (%zu chunks)\n", o.dump.c_str(), order.size());
+}
+
 void bench_terrain_gpu(const Options& o, const IR& ir, const TerrainModel& tm) {
     const size_t per = static_cast<size_t>(16 * 16 * ir.height);
     const int tile = std::max(1, static_cast<int>(std::sqrt(static_cast<double>(o.batch))));
     std::vector<cuda::ChunkXZ> order = tile_order(o, tile);
     const size_t bytes = per * order.size();
     uint8_t* out = o.pinned ? cuda::alloc_pinned(bytes) : new uint8_t[bytes];
+    const size_t qper = static_cast<size_t>(16 * (ir.height / 4));
+    std::vector<uint8_t> biome_out(o.dump.empty() ? 0 : qper * order.size());
     std::vector<Row> rows;
     {
         cuda::FullTerrainGenerator gen(ir, tm, o.batch, o.streams);
@@ -181,7 +203,7 @@ void bench_terrain_gpu(const Options& o, const IR& ir, const TerrainModel& tm) {
         for (int rep = -o.warmup; rep < o.reps; ++rep) {
             Row r;
             double s = now_s();
-            gen.generate(order.data(), static_cast<int>(order.size()), out, nullptr, nullptr, &r.t);
+            gen.generate(order.data(), static_cast<int>(order.size()), out, o.dump.empty() ? nullptr : biome_out.data(), nullptr, &r.t);
             r.seconds = now_s() - s;
             if (rep >= 0) rows.push_back(r);
         }
@@ -215,6 +237,7 @@ void bench_terrain_gpu(const Options& o, const IR& ir, const TerrainModel& tm) {
     }
     report(o, "cuda-terrain", rows);
     if (!o.topdown.empty()) write_topdown(o, ir, tm, order, out, per);
+    if (!o.dump.empty()) write_dump(o, ir, order, out, biome_out.data(), per, qper);
     if (!o.verify.empty()) {
         std::vector<uint8_t> rm(bytes);
         for (size_t i = 0; i < order.size(); ++i) {
@@ -354,6 +377,7 @@ int main(int argc, char** argv) {
             else if (a == "--streams") o.streams = std::stoi(next());
             else if (a == "--timeline") o.timeline = next();
             else if (a == "--topdown") o.topdown = next();
+            else if (a == "--dump") o.dump = next();
             else throw std::runtime_error("unknown argument " + a);
         }
         const std::string ver = "26.3";

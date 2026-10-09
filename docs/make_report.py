@@ -413,7 +413,7 @@ figure.code figcaption{margin:0;padding:9px 14px 11px;border-top:1px solid var(-
 .lead{margin-bottom:0}
 h4{font:700 16px/1.35 var(--font-display);font-stretch:104%;margin:30px 0 4px}
 figure.video{padding:12px}
-figure.video video{display:block;width:100%;height:auto;border-radius:4px;background:#101411}
+figure.video video,figure.video img{display:block;width:100%;height:auto;border-radius:4px;background:#101411}
 .videos{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin:14px 0 6px}
 .videos figure{margin:0}
 @media (max-width:640px){.videos{grid-template-columns:minmax(0,1fr)}}
@@ -763,8 +763,9 @@ def main():
              'old-world chunks, features, lighting. In a live server the first biome lookup of a chunk starts from the worker thread\'s previous lookup; '
              'ours starts empty, like the oracle, so a server can differ where that first lookup is an exact tie (see Correctness).</li>')
     H.append('<li><b>Decisions taken without the author:</b> Minecraft 26.3 on native Windows; game-derived data (IR, terrain model, oracle dumps) is '
-             'extracted locally into the git-ignored <code>data/</code> and never committed; clocks unlocked; overworld only; the optional Fabric/JNI mod '
-             'was not started.</li></ul>')
+             'extracted locally into the git-ignored <code>data/</code> and never committed; clocks unlocked; overworld only. A Fabric mod '
+             '(<code>client/</code>) exists only to record the in-game videos from a precomputed dump; running CUDA inside the game (JNI) was not '
+             'attempted.</li></ul>')
     steps = [('powershell -File build.ps1', 'CMake + Ninja, Release'),
              ('powershell -File oracle\\regen.ps1', 'reference data from the local game jar (data/, git-ignored)'),
              ('build\\tests\\mccuda_tests.exe --set full', 'bit-exactness, all levels'),
@@ -829,6 +830,78 @@ def videos_section():
     out.append(video('gpu-region-128', 'RTX 5090 at its benchmark batch size: a 128\u00d7128 region (16,384 chunks, chunk 400, \u2212300) in %s, %s '
                                        'chunks/s, eight batches of 2,048, then a replay at 1/%d speed.' % (secs('gpu128'), rate('gpu128'), m['gpu128_slowdown'])))
     out.append('</div>')
+    out.append(first_person_section())
+    return '\n'.join(out)
+
+
+def first_person_section():
+    """First-person recordings: the GPU ray tracer generating live (bench/make_flythrough.py) and the
+    real Minecraft client flying the same path through GPU chunks (client/, bench/make_ingame.py)."""
+    fj, ij = ROOT / 'docs' / 'videos' / 'flythrough.json', ROOT / 'docs' / 'videos' / 'ingame.json'
+    if not (fj.exists() and ij.exists()):
+        return ''
+    f, g = json.loads(fj.read_text(encoding='utf-8')), json.loads(ij.read_text(encoding='utf-8'))
+    c = '{:,}'.format
+
+    def video(name, caption):
+        return ('<figure class="video"><video src="videos/%s.mp4" poster="videos/%s.jpg" muted playsinline controls preload="none" aria-label="%s"></video>'
+                '<figcaption>%s</figcaption></figure>' % (name, name, html.escape(caption.split('.')[0]), caption))
+
+    out = ['<h3 id="first-person">In first person</h3>']
+    out.append('<p>Two more recordings fly one camera path through the same seed: 38 seconds that start with a walk at eye height in the badlands, '
+               'then climb over mesas, a forest, a river and the coast. The first is our own renderer generating the terrain live on the GPU; the second '
+               'is the real game, flying through chunks the GPU generated.</p>')
+    st, ss = f['startup'], f['steady']
+    out.append(video('flythrough', 'Our CUDA renderer (<code>viz/fly.cu</code>) generates every chunk within %d chunks of the camera as it moves, with the '
+                                   'bit-exact TERRAIN pipeline, and ray traces the view on the same GPU: %s chunks in the first %d frames (%.0f ms), then '
+                                   '%.0f new chunks per generating frame in %.1f ms on average (%.1f ms at most), %s chunks in all. Flat procedural colours, no '
+                                   'game textures; the overlay shows each batch\'s measured time.'
+                     % (f['radius_chunks'], c(st['chunks']), st['frames'], st['gen_ms'], ss['new_mean'], ss['gen_ms_mean'], ss['gen_ms_max'],
+                        c(f['chunks_total']))))
+    out.append(video('ingame', 'The real Minecraft 26.3 client. A Fabric mod in a development client fills every chunk of a %d\u00d7%d-chunk region with '
+                               'the GPU\'s blocks and biomes in place of vanilla\'s noise fill, surface rules and biome placement; the game then runs its '
+                               'own carvers, trees and lighting. %s chunks came from the GPU, and at every frame the client held %d chunks from outside '
+                               'the region. Rendered at %.0f fps and captured frame by frame.'
+                     % (g['region']['size'], g['region']['size'], c(g['gpu_chunks']), g['client_chunks_outside_region_max'], g['client_fps_median'])))
+    out.append(video('compare', 'The same frames side by side: the same mesas, terracotta bands and rivers. The ray tracer shows the TERRAIN step alone; '
+                                'the client adds the game\'s later steps (trees, grass, lighting) on top of it.'))
+    out.append('<p class="lead">The mod swaps the GPU\'s output in at vanilla\'s own seams: the chunk arrives already filled, and vanilla\'s surface pass, '
+               'whose result the GPU has already applied, is skipped.</p>')
+    out.append(snippet('client/src/main/java/mccuda/client/mixin/NoiseGeneratorMixin.java', r'@Inject\(method = "doFill"', r'^    }$',
+                       'Chunks inside the region take their blocks from the dump the GPU wrote beforehand (<code>mccuda_bench --dump</code>, %.1f GB '
+                       'for the region); the client does not call CUDA itself. Biomes are swapped in the same way at <code>doCreateBiomes</code>.'
+                       % (g['region']['size'] ** 2 * 384 * 256 / 1e9), lang='java'))
+    t = g['control_takes']
+    rows = []
+    for key, label in (('vanilla_raw', 'vanilla'), ('vanilla2_raw', 'vanilla, second run'), ('vanilla_struct_raw', 'vanilla, structures on')):
+        v = t[key]['verify']
+        rows.append([label, 'on' if t[key]['structures'] else 'off', c(v['block_chunks']), c(v['blocks']),
+                     '<span class="ok">0</span>' if v['block_mismatches'] == 0 else c(v['block_mismatches']), c(v['biomes']),
+                     '<span class="ok">0</span>' if v['biome_mismatches'] == 0 else c(v['biome_mismatches'])])
+    out.append('<p><b>Checked inside the game.</b> For the control takes the mod leaves generation to the game and compares what the game produced with '
+               'the GPU\'s dump, chunk by chunk, as the server generates them: the biomes right after <code>doCreateBiomes</code> and every block right '
+               'after <code>buildSurface</code>, the end of the TERRAIN step.</p>')
+    out.append(table(['take', 'structures', 'chunks', 'blocks compared', 'mismatches', 'biome values', 'mismatches'], rows, num_cols=(2, 3, 4, 5, 6)))
+    vs = t['vanilla_struct_raw']['verify']
+    out.append('<p>With structures on, every mismatch is in a chunk whose density a structure reshapes (the Beardifier, for villages, trail ruins and '
+               'the like): %s of the %s such chunks differ, %s blocks in all, and the other %s chunks match exactly. The GPU pipeline leaves structure terrain '
+               'adaptation out (see Scope), so the recordings use worlds without structures. One more thing the dump does not carry: vanilla\'s '
+               '<code>doFill</code> also marks aquifer fluid blocks that should start flowing once the chunk is finished. In GPU-filled chunks those '
+               'fluids stay still until a neighbouring block changes. The blocks themselves are identical.</p>'
+               % (c(vs['structure_adapted_chunks_differing']), c(vs['structure_adapted_chunks']), c(vs['structure_adapted_mismatches']),
+                  c(vs['block_chunks'] - vs['structure_adapted_chunks'])))
+    gv, vv = g['frames_gpu_vs_vanilla'], g['frames_vanilla_vs_vanilla']
+    out.append('<p><b>The frames are not identical, and are not expected to be.</b> The GPU take differs from the vanilla take in %.1f%% of pixels per '
+               'frame on average (by more than 8 of 255), and two vanilla takes differ from each other by about the same, %.1f%%. The differences are '
+               'trees. A chunk\'s trees are placed while its neighbours may already be decorated, so where trees compete for space the outcome depends '
+               'on the order in which the server\'s worker threads finish chunks. The ground under the trees is the same in all three.</p>'
+               % (100 * gv['pixels_over_8_mean'], 100 * vv['pixels_over_8_mean']))
+    out.append('<figure class="video"><img src="videos/trees.jpg" alt="The same forest in three takes: GPU chunks, vanilla, and vanilla again" '
+               'loading="lazy"><figcaption>Frame %d of three takes, cropped where the GPU take and the first vanilla take differ most. The trees '
+               'change between the two vanilla runs as much as between GPU and vanilla; the terrain does not.</figcaption></figure>' % gv['worst_frame'])
+    out.append(snippet('client/src/main/java/mccuda/client/GpuDump.java', r'public void verifyBlocks', r'^    }$',
+                       'The in-game block check: the game\'s own chunk after its surface pass, compared state by state (block states are canonical '
+                       'objects, so identity is equality) with the GPU\'s palette index at the same position.', lang='java'))
     return '\n'.join(out)
 
 
@@ -847,6 +920,19 @@ def write_readme(van1, van32, D, gpu, kern, sp1, sp32, spc, cpu1x, tests, total_
 
     cpu1, cpu32 = D['cpu_terrain'][1], D['cpu_terrain'][32]
     blocks = sum(v['blocks'] for v in verify)
+    ingame = ''
+    ij = ROOT / 'docs' / 'videos' / 'ingame.json'
+    if ij.exists():
+        g = json.loads(ij.read_text(encoding='utf-8'))
+        v = g['control_takes']['vanilla_raw']['verify']
+        ingame = (f'''
+
+[![The GPU renderer and the real Minecraft client on the same camera path](docs/videos/compare.jpg)](docs/videos/compare.mp4)
+
+*Click for the video: our CUDA renderer generating terrain live (left) and the real Minecraft 26.3 client flying
+the same path through chunks the GPU generated (right; [in-game video](docs/videos/ingame.mp4)). Inside the game,
+the same chunks generated by vanilla itself matched the GPU's output: {v['blocks']:,} blocks and
+{v['biomes']:,} biome values, 0 mismatches (structures off; see the report).*''')
     md = f'''# Minecraft terrain generation on CUDA, bit for bit
 
 Minecraft Java Edition 26.3's overworld terrain generation reimplemented as CUDA kernels.
@@ -861,7 +947,7 @@ vanilla on one thread and **{sp32:.0f}x** vanilla on all 32 threads of a Ryzen 9
 [![The same region generated by every implementation, real time](docs/videos/race.jpg)](docs/videos/race.mp4)
 
 *Click for the video: the same 32\u00d732-chunk region generated by every implementation, replayed at real speed from
-each run's per-chunk finish times ([all videos](docs/videos/)).*
+each run's per-chunk finish times ([all videos](docs/videos/)).*{ingame}
 
 | Full TERRAIN step (no carvers) | chunks/s | ms per chunk | vs vanilla 1 thread |
 |---|---:|---:|---:|

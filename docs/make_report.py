@@ -1127,6 +1127,12 @@ Overworld, Minecraft 26.3. Not included: carvers, the terrain adaptation around 
 blending with old chunks, features and lighting. The Fabric mod in `client/` only records the
 in-game videos and checks from a precomputed GPU dump; running CUDA inside the game was not
 attempted.
+
+## License
+
+MIT, see [LICENSE](LICENSE). `third_party/nlohmann/json.hpp` keeps its own MIT license. The
+license covers this repository's code and documents; Minecraft itself and the data extracted
+from it are not part of it.
 '''
     (ROOT / 'README.md').write_text(md, encoding='utf-8')
     print('wrote README.md')
